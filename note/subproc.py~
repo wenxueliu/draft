@@ -1,0 +1,27 @@
+#! /usr/bin python
+
+from subprocess import PIPE, Popen
+
+def subproc():
+	p = Popen(["python", "-u", "test.py"], stdin=PIPE, stdout=PIPE, bufsize=1)
+	print p.stdout.readline() # read the first line "Something to print"
+
+    #p.stdin.write('a line\n')
+
+    #print p.stdout.readline()
+
+    # repeat several times to show that it works
+	for i in xrange(10):
+        print >>p.stdin, i # write input,  stdin=PIPE
+        #p.stdin.write('i\n')
+        #p.stdin.flush()
+		print p.stdout.readline() # read output,stdout=PIPE
+		# the above print is equal to follow two sentence
+
+	print p.communicate("n\n")[0] # signal the child to exit,
+		                           # read the rest of the output, 
+                               	   # wait for the child to exit
+
+
+if __name__ == "__main__":
+    subproc()

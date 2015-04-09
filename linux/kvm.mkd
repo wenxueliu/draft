@@ -1,0 +1,11 @@
+---
+layout: post
+category : lessons
+tagline: "Supporting tagline"
+tags : [kvm, beginner, jekyll, tutorial]
+---
+{% include JB/setup %}
+
+##KVM##
+
+###硬件支持:

@@ -1,0 +1,3 @@
+#! /usr/bin python
+a = "abc-efd-ad-adg"
+print a.rsplit('-',2)[0]

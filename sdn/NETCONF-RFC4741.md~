@@ -1,0 +1,211 @@
+###Protocol Overview
+
+The NETCONF protocol defines a simple mechanism through which a
+network device can be managed, configuration data information can be
+retrieved, and new configuration data can be uploaded and
+manipulated.
+
+NETCONF uses a simple RPC-based mechanism to facilitate communication
+between a client and a server.
+
+A key aspect of NETCONF is that it allows the functionality of the
+management protocol to closely mirror the native functionality of the
+device.
+
+A NETCONF session is the logical connection between a network
+administrator or network configuration application and a network
+device. A device MUST support at least one NETCONF session and
+SHOULD support multiple sessions.
+
+                        Example
+    +-------------+  +-----------------------------+
+    |   Content   |  |     Configuration data      |          |
+    +-------------+  +-----------------------------+
+          |                       |
+    +-------------+  +-----------------------------+
+    | Operations  |  | <get-config>, <edit-config> |
+    +-------------+  +-----------------------------+
+          |                       |
+    +-------------+  +-----------------------------+
+    |    RPC      |  |     <rpc>, <rpc-reply>      |
+    +-------------+  +-----------------------------+
+          |                       |
+    +-------------+  +-----------------------------+
+    |  Transport  |  |                             |
+    |  Protocol   |  |    BEEP, SSH, SSL, console  |
+    +-------------+  +-----------------------------+
+
+* Capabilities
+
+A NETCONF capability is a set of functionality that supplements the base NETCONF
+specification. The capability is identified by a uniform resource identifier
+(URI).
+
+The device uses capabilities to announce the set of data models that the device
+implements. The capability definition details the operation and constraints
+imposed by data model.
+
+* 状态与配置分离
+
+当配置和状态数据在一起的时候，会导致很多问题[第8页]。因此有专门针对
+配置的 get-config 和 状态的 get 操作。
+
+* RPC 通信模型
+* 多协议支持
+* 配置数据存储(Configuration Datastore)
+    running
+    candidate
+    startup
+
+##subtree filtering
+
+###namespace
+
+    <filter type="subtree">
+        <top xmlns="http://example.com/schema/1.2/config"/>
+    </filter>
+
+只有出现 top 元素的节点，并且在 namespace http://example.com/schema/1.2/config
+下的才匹配
+
+###attribute
+
+    <filter type="subtree">
+        <t:top xmlns:t="http://example.com/schema/1.2/config">
+            <t:interfaces>
+                <t:interface t:ifName="eth0"/>
+            </t:interfaces>
+        </t:top>
+    </filter>
+
+只有在 http://example.com/schema/1.2/config 命名空间下的 interfaces 节点，并且
+interface 中的 ifName 属性是 eth0 才匹配。
+
+###Containment Node
+
+上中的 top interfaces interface 都是 Containment Node
+
+###Selection Node
+
+    <filter type="subtree">
+        <top xmlns="http://example.com/schema/1.2/config">
+            <users/>
+        </top>
+    </filter>
+
+这里 users 就是一个 Selection Node(即一个没有叶子节点的节点)
+
+###Content Match Node
+
+    <filter type="subtree">
+        <top xmlns="http://example.com/schema/1.2/config">
+            <users>
+                <user>
+                    <name>fred</name>
+                </user>
+            </users>
+        </top>
+    </filter>
+
+name 是 Content Match Node
+
+###例子
+
+####No Filter
+
+    <rpc message-id="101" xmlns="urn:ietf:params:xml:ns:netconf:base:1.0">
+        <get/>
+    </rpc>
+
+    <rpc-reply message-id="101" xmlns="urn:ietf:params:xml:ns:netconf:base:1.0">
+        <data>
+            <!-- ... entire set of data returned ... -->
+        </data>
+    </rpc-reply>
+
+####Empty Filter
+
+    <rpc message-id="101" xmlns="urn:ietf:params:xml:ns:netconf:base:1.0">
+        <get>
+            <filter type="subtree">
+            </filter>
+        </get>
+    </rpc>
+
+    <rpc-reply message-id="101" xmlns="urn:ietf:params:xml:ns:netconf:base:1.0">
+        <data>
+        </data>
+    </rpc-reply>
+
+
+####Select the Entire <users> Subtree
+
+    <rpc message-id="101" xmlns="urn:ietf:params:xml:ns:netconf:base:1.0">
+        <get-config>
+            <source>
+                <running/>
+            </source>
+            <filter type="subtree">
+                <top xmlns="http://example.com/schema/1.2/config">
+                    <users/>
+                </top>
+            </filter>
+        </get-config>
+    </rpc>
+
+OR
+
+    <rpc message-id="101" xmlns="urn:ietf:params:xml:ns:netconf:base:1.0">
+        <get-config>
+            <source>
+                <running/>
+            </source>
+            <filter type="subtree">
+                <top xmlns="http://example.com/schema/1.2/config">
+                    <users>
+                        <user/>
+                    </users>
+                </top>
+            </filter>
+        </get-config>
+    </rpc>
+
+    <rpc-reply message-id="101" xmlns="urn:ietf:params:xml:ns:netconf:base:1.0">
+        <data>
+            <top xmlns="http://example.com/schema/1.2/config">
+                <users>
+                    <user>
+                        <name>root</name>
+                        <type>superuser</type>
+                        <full-name>Charlie Root</full-name>
+                        <company-info>
+                            <dept>1</dept>
+                            <id>1</id>
+                            </company-info>
+                                </user>
+                                <user>
+                                <name>fred</name>
+                                <type>admin</type>
+                                <full-name>Fred Flintstone</full-name>
+                                <company-info>
+                                    <dept>2</dept>
+                                    <id>2</id>
+                                </company-info>
+                                </user>
+                                <user>
+                                <name>barney</name>
+                                <type>admin</type>
+                                <full-name>Barney Rubble</full-name>
+                            <company-info>
+                            <dept>2</dept>
+                            <id>3</id>
+                        </company-info>
+                    </user>
+                </users>
+            </top>
+        </data>
+    </rpc-reply>
+
+####Select All <name> Elements within the <users> Subtree
+
+

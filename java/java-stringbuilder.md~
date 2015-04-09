@@ -1,0 +1,34 @@
+String str = null;
+
+//------------Using Concatenation operator-------------
+long time1 = System.currentTimeMillis();
+long freeMemory1 = Runtime.getRuntime().freeMemory();
+for(int i=0; i<100000; i++){
+str = "Hi";
+str = str+" Bye";
+}
+long time2 = System.currentTimeMillis();
+long freeMemory2 = Runtime.getRuntime().freeMemory();
+
+long timetaken1 = time2-time1;
+long memoryTaken1 = freeMemory1 - freeMemory2;
+System.out.println("Concat operator  :" + "Time taken =" + timetaken1 + 
+                   " Memory Consumed =" + memoryTaken1);
+
+//------------Using Concat method-------------
+long time3 = System.currentTimeMillis();
+long freeMemory3 = Runtime.getRuntime().freeMemory();
+for(int j=0; j<100000; j++){
+str = "Hi";
+str = str.concat(" Bye");
+
+}
+long time4 = System.currentTimeMillis();
+long freeMemory4 = Runtime.getRuntime().freeMemory();
+long timetaken2 = time4-time3;
+long memoryTaken2 = freeMemory3 - freeMemory4;
+System.out.println("Concat method  :" + "Time taken =" + timetaken2 + 
+                   " Memory Consumed =" + memoryTaken2);
+
+
+http://www.stormzhang.com/java/2014/08/08/java-string-stringbuilder-stringbuffer/

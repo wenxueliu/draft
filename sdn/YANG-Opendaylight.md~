@@ -1,0 +1,179 @@
+
+###Struct
+
+####yang folder
+
+* yang-common
+
+Common concepts for YANG
+
+* yang-model-api
+
+Java Interfaces describing in-memory model of parsed
+
+* YANG schema
+
+* yang-model-util
+
+Util classes and methods for parsed YANG schema code-generator folder
+
+####code-generator folder
+
+* binding-generator-*
+
+APIs and Implementation of component responsible for mapping between YANG and JAVA
+
+*binding-java-api-generator
+
+Component responsible for writing the mapping as Java code
+
+* binding-model-api
+
+    APIs for modeling JAVA types which are to be genereated
+* code-generator-demo
+
+    Demo code generator application which was presented on HackFest
+
+* maven-yang-*
+
+Maven plugin with SPI for adding components processing YANG files in Maven build
+process
+
+* yang-model-parser-*
+
+Implementation of YANG parser, which parses input text YANG files into the
+objects defined in yang-model-api.
+
+
+###Code Map
+
+https://wiki.opendaylight.org/view/Yang_Tools:Code_Generation_Demo:YANG2JAVA_Mapping_%28Flow_example%29
+
+https://wiki.opendaylight.org/view/YANG_Tools:YANG_to_Java_Mapping
+
+###YANG Demo
+
+$ cd controller/opendaylight/md-sal/samples
+
+####toaster
+
+* pom.xml contains configuration for project and code generation plugin
+* src/main/yang/toaster.yang contains YANG model of toaster
+
+####toaster-consumer
+
+contains sample consumer code for MD-SAL
+
+####toaster-provider
+
+contains sample provider code for MD-SAL
+
+####toaster-it
+
+Sample PAX EXAM integration test using these dependencies. 
+
+####toaster-config
+
+contains sample config code for MD-SAL
+
+###mvn clean install
+
+
+###Ping Demo
+
+https://wiki.opendaylight.org/view/Ping
+
+
+
+##Reference
+
+https://wiki.opendaylight.org/view/YANG_Tools:Helium:How-To%27s/Tutorials
+
+
+##Suffix
+
+follow must be given in build section of pom.xml
+     
+     <!-- 可选 -->
+     <dependency>
+       <groupId>org.opendaylight.yangtools</groupId>
+       <artifactId>yang-binding</artifactId>
+     </dependency>
+     <dependency>
+       <groupId>org.opendaylight.yangtools</groupId>
+       <artifactId>yang-common</artifactId>
+     </dependency>
+     <dependency>
+       <groupId>org.opendaylight.yangtools.model</groupId>
+       <artifactId>ietf-yang-types</artifactId>
+     </dependency>
+     <dependency>
+       <groupId>org.opendaylight.yangtools.model</groupId>
+       <artifactId>ietf-inet-types</artifactId>
+       <version>${ietf-inet-types.version}</version>
+     </dependency>
+     <dependency>
+       <groupId>org.opendaylight.yangtools.model</groupId>
+       <artifactId>yang-ext</artifactId>
+       <version>${yang-ext.version}</version>
+     </dependency>
+     
+      <!--必须-->
+      <plugin>
+        <groupId>org.opendaylight.yangtools</groupId>
+        <artifactId>yang-maven-plugin</artifactId>
+        <version>${yangtools.version}</version>
+        <dependencies>
+          <dependency>
+            <groupId>org.opendaylight.yangtools</groupId>
+            <artifactId>maven-sal-api-gen-plugin</artifactId>
+            <version>${yangtools.version}</version>
+            <type>jar</type>
+          </dependency>
+          <dependency>
+            <groupId>org.opendaylight.yangtools</groupId>
+            <artifactId>yang-binding</artifactId>
+            <version>${yangtools.version}</version>
+            <type>jar</type>
+          </dependency>
+        </dependencies>
+        <executions>
+          <execution>
+            <goals>
+              <goal>generate-sources</goal>
+            </goals>
+            <configuration>
+              <yangFilesRootDir>src/main/yang</yangFilesRootDir>
+              <codeGenerators>
+                <generator>
+                  <codeGeneratorClass>org.opendaylight.yangtools.maven.sal.api.gen.plugin.CodeGeneratorImpl</codeGeneratorClass>
+                  <outputBaseDir>${salGeneratorPath}</outputBaseDir>
+                </generator>
+                <generator>
+                  <codeGeneratorClass>org.opendaylight.yangtools.yang.unified.doc.generator.maven.DocumentationGeneratorImpl</codeGeneratorClass>
+                  <outputBaseDir>target/site/models</outputBaseDir>
+                </generator>
+                <generator>
+                  <codeGeneratorClass>org.opendaylight.yangtools.yang.wadl.generator.maven.WadlGenerator</codeGeneratorClass>
+                  <outputBaseDir>target/site/models</outputBaseDir>
+                </generator>
+              </codeGenerators>
+              <inspectDependencies>true</inspectDependencies>
+            </configuration>
+          </execution>
+          
+        </executions>
+		<!--可选 -->
+        <dependencies>
+            <dependency>
+              <groupId>org.opendaylight.controller</groupId>
+              <artifactId>yang-jmx-generator-plugin</artifactId>
+              <version>${config.version}</version>
+            </dependency>
+            <dependency>
+              <groupId>org.opendaylight.yangtools</groupId>
+              <artifactId>maven-sal-api-gen-plugin</artifactId>
+              <version>${yangtools.version}</version>
+            </dependency>
+        </dependencies>
+      </plugin>
