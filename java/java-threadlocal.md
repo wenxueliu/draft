@@ -182,7 +182,7 @@ Pooling something trivial like a StringBuffer, Integer or small byte array can a
  performance on modern JVMs. 
 
 
-##如何使用ThreadLocal？
+##应用场景之多参数传递
 
 在系统中任意一个适合的位置定义个 ThreadLocal 变量，可以定义为 public static 类型（直接new出来一个 ThreadLocal 
 对象），要向里面放入数据就使用 set(Object)，要获取数据就用 get() 操作，删除元素就用 remove()，其余的方法是非 
@@ -238,6 +238,102 @@ name 和 value 是可以对应起来的，中间通过多个方法的调用，�
 对应的变量的过程，不过实际的系统中往往会跨类，这里仅仅在一个类中模拟，其实跨类也是一样的结果，大家
 可以自己去模拟就可以。
 
+##应用场景之数据库连接
+
+```java
+class ConnectionManager {
+
+    private static Connection connect = null;
+
+    public static Connection openConnection() {
+            if(connect == null){
+                        connect = DriverManager.getConnection();
+                    }
+            return connect;
+        }
+    public static void closeConnection() {
+            if(connect!=null)
+                connect.close();
+        }
+}
+```
+假设有这样一个数据库链接管理类，这段代码在单线程中使用是没有任何问题的，但是如果在多线程中使用呢？
+很显然，在多线程中使用会存在线程安全问题：
+
+第一，这里面的2个方法都没有进行同步，很可能在 openConnection 方法中会多次创建 connect；
+
+第二，由于 connect 是共享变量，那么必然在调用 connect 的地方需要使用到同步来保障线程安全，因为很可能
+一个线程在使用 connect 进行数据库操作，而另外一个线程调用 closeConnection 关闭链接。
+
+所以出于线程安全的考虑，必须将这段代码的两个方法进行同步处理，并且在调用connect的地方需要进行同步处理。
+
+这样将会大大影响程序执行效率，因为一个线程在使用 connect 进行数据库操作的时候，其他线程只有等待。
+
+那么大家来仔细分析一下这个问题，这地方到底需不需要将 connect 变量进行共享？事实上，是不需要的。假如每个线程
+中都有一个 connect 变量，各个线程之间对 connect 变量的访问实际上是没有依赖关系的，即一个线程不需要关心其他线
+程是否对这个 connect 进行了修改的。
+
+到这里，可能会有朋友想到，既然不需要在线程之间共享这个变量，可以直接这样处理，在每个需要使用数据库连接的方法
+中具体使用时才创建数据库链接，然后在方法调用完毕再释放这个连接。比如下面这样：
+
+```java
+class ConnectionManager {
+
+    private  Connection connect = null;
+
+    public Connection openConnection() {
+            if(connect == null){
+                        connect = DriverManager.getConnection();
+                    }
+            return connect;
+        }
+
+    public void closeConnection() {
+            if(connect!=null)
+                connect.close();
+        }
+}
+
+class Dao{
+    public void insert() {
+            ConnectionManager connectionManager = new ConnectionManager();
+            Connection connection = connectionManager.openConnection();
+
+            //使用connection进行操作
+            connectionManager.closeConnection();
+        }
+}
+```
+这样处理确实也没有任何问题，由于每次都是在方法内部创建的连接，那么线程之间自然不存在线程安全问题。
+但是这样会有一个致命的影响：导致服务器压力非常大，并且严重影响程序执行性能。由于在方法中需要频繁地
+开启和关闭数据库连接，这样不尽严重影响程序执行效率，还可能导致服务器压力巨大。
+
+那么这种情况下使用 ThreadLocal 是再适合不过的了，因为 ThreadLocal 在每个线程中对该变量会创建一个副本，
+即每个线程内部都会有一个该变量，且在线程内部任何地方都可以使用，线程之间互不影响，这样一来就不存在线
+程安全问题，也不会严重影响程序执行性能。
+
+但是要注意，虽然 ThreadLocal 能够解决上面说的问题，但是由于在每个线程中都创建了副本，所以要考虑它对资
+源的消耗，比如内存的占用会比不使用 ThreadLocal 要大。
+
+##应用场景之 session 管理
+
+``` java
+private static final ThreadLocal threadSession = new ThreadLocal();
+
+public static Session getSession() throws InfrastructureException {
+    Session s = (Session) threadSession.get();
+    try {
+            if (s == null) {
+                        s = getSessionFactory().openSession();
+                        threadSession.set(s);
+                    }
+        } catch (HibernateException ex) {
+                throw new InfrastructureException(ex);
+            }
+    return s;
+}
+```
+
 ##ThreadLocal 原理
 
 ###set(T obj)
@@ -266,13 +362,13 @@ void createMap(Thread t, T firstValue) {
 返回创建了一个ThreadLocalMap，并且将传入的参数和当前ThreadLocal作为K-V结构写入进去
 
 ```java
-       ThreadLocalMap(ThreadLocal firstKey, Object firstValue) {
-            table = new Entry[INITIAL_CAPACITY];
-            int i = firstKey.threadLocalHashCode & (INITIAL_CAPACITY - 1);
-            table[i] = new Entry(firstKey, firstValue);
-            size = 1;
-            setThreshold(INITIAL_CAPACITY);
-        }
+ThreadLocalMap(ThreadLocal firstKey, Object firstValue) {
+    table = new Entry[INITIAL_CAPACITY];
+    int i = firstKey.threadLocalHashCode & (INITIAL_CAPACITY - 1);
+    table[i] = new Entry(firstKey, firstValue);
+    size = 1;
+    setThreshold(INITIAL_CAPACITY);
+}
 ```
 
 这里就不说明 ThreadLocalMap 的结构细节，只需要知道它的实现和 HashMap 类似，只是很多方法没有，
@@ -280,22 +376,22 @@ void createMap(Thread t, T firstValue) {
 它是一个 ThreadLocal 里面的一个 static 内部类，default 类型，仅仅在 java.lang 下面的类可以
 引用到它，所以你可以想到 Thread 可以引用到它。
 
-我们再回过头来看看 getMap 方法，因为上面我仅仅知道获取的 Map 是和线程相关的，有一个 
+我们再回过头来看看 getMap 方法，因为上面我仅仅知道获取的 Map 是和线程相关的，有一个
 t.threadLocalMap = new ThreadLocalMap(this, firstValue)的时候，相信你应该大概有点明白，
 这个变量应该来自 Thread 里面，我们根据 getMap 方法进去看看：
 
 ```java
 
-    ThreadLocalMap getMap(Thread t) {  
-            return t.threadLocals;  
-        }  
+    ThreadLocalMap getMap(Thread t) {
+            return t.threadLocals;
+        }
 ```
 
 是的，是来自于Thread，而这个Thread正好又是当前线程，那么进去看看定义就是：
 
 ```java
 
-    ThreadLocal.ThreadLocalMap threadLocals = null;  
+    ThreadLocal.ThreadLocalMap threadLocals = null;
 ```
 
 这个属性就是在 Thread 类中，也就是每个 Thread 默认都有一个 ThreadLocalMap，用于存放线程级别的局部变量，
@@ -305,28 +401,50 @@ t.threadLocalMap = new ThreadLocalMap(this, firstValue)的时候，相信你应�
 
 ###get()
 
-    public T get() {  
-            Thread t = Thread.currentThread();  
-            ThreadLocalMap map = getMap(t);  
-            if (map != null) {  
-                ThreadLocalMap.Entry e = map.getEntry(this);  
-                if (e != null)  
-                    return (T)e.value;  
-            }  
-            return setInitialValue();  
-        }     
+```java
+    public T get() {
+            Thread t = Thread.currentThread();
+            ThreadLocalMap map = getMap(t);
+            if (map != null) {
+                ThreadLocalMap.Entry e = map.getEntry(this);
+                if (e != null)
+                    return (T)e.value;
+            }
+            return setInitialValue();
+        }
+```
 
 通过根据当前线程调用 getMap 方法，也就是调用了 t.threadLocalMap，然后在 map 中查找，注意 Map 中找到的是
 Entry，也就是 K-V 基本结构，因为你 set 写入的仅仅有值，所以，它会设置一个 e.value 来返回你写入的值，因为
 Key 就是 ThreadLocal 本身。你可以看到 map.getEntry 也是通过 this 来获取的。
 
+```java
+    private T setInitialValue() {
+        value = initialValue();
+        Thread t = Thread.currentThread();
+        ThreadLocalMap map = getMap(t);
+        if (map != null)
+            return map.set(this, value);
+        else
+            createMap(t, value)
+        return value;
+    }
+```
+
+因为在上面的代码分析过程中，我们发现如果没有先 set 的话，即在 map 中查找不到对应的存储，则会通过调用 setInitialValue
+方法返回 i，而在 setInitialValue 方法中，有一个语句是 T value = initialValue()， 而默认情况下，initialValue 方法返回
+的是 null, 因此, 在进行get之前，必须先set，否则会报空指针异常。
+
+
 ###remove()
 
-    public void remove() {  
-             ThreadLocalMap m = getMap(Thread.currentThread());  
-             if (m != null)  
-                 m.remove(this);  
-         }  
+```java
+    public void remove() {
+             ThreadLocalMap m = getMap(Thread.currentThread());
+             if (m != null)
+                 m.remove(this);
+         }
+```
 
 同样根据当前线程获取 map，如果不为空，则 remove，通过this来remove。
 
@@ -353,7 +471,8 @@ ThreadLocal 和 Thread 是在同一个 package 下面，可以引用到这个类
 ###注意点:
 
 不能放置全局变量，只能放置线程私有的对象
-ThreadLocal主要还是线程封闭的一种用法，而且跨类和方法传递参数很好用（不是主要目的），且线程安全。
+ThreadLocal 主要还是线程封闭的一种用法，而且跨类和方法传递参数很好用（不是主要目的），且线程安全。
+ThreadLocal 首先要 set 才可以 get 否则会抛出 NullPointerException 异常
 
 
 这个 ThreadLocal 有啥坑呢，大家从前面应该可以看出来，这个 ThreadLocal 相关的对象是被绑定到一个 Map 中的，
@@ -370,3 +489,4 @@ remove 的位置去，或导致一些逻辑问题，另外，如果不 remove �
 ##参考
 
 http://blog.csdn.net/xieyuooo/article/details/8599266
+http://www.cnblogs.com/dolphin0520/p/3920407.html
