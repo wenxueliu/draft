@@ -153,16 +153,16 @@ clone from [here](http://coolshell.cn/articles/265.html)
 
 其六，关于代码重用。也话我们的系统中有很多个类需要用到这个模式，如果我们在每一个类都中有这样的代码，那么就显得有点傻了。那么，我们是否可以使用一种方法，把这具模式抽象出去？在C++下这是很容易的，因为有模板和友元，还支持栈上分配内存，所以比较容易一些（程序如下所示），Java下可能比较复杂一些，聪明的你知道怎么做吗？
 
-template class Singleton
-{
-    public:
-        static T& Instance()
-        {
-            static T theSingleInstance; //假设T有一个protected默认构造函数
-            return theSingleInstance;
-        }
-};
- 
+    template class Singleton
+    {
+        public:
+            static T& Instance()
+            {
+                static T theSingleInstance; //假设T有一个protected默认构造函数
+                return theSingleInstance;
+            }
+    };
+
 class OnlyOne : public Singleton
 {
     friend class Singleton;
