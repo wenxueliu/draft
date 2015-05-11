@@ -2,22 +2,45 @@
 
 
 ##MAC 地址
-MAC（Medium/MediaAccess Control,介质访问控制）MAC地址是收录在NetworkInterfaceCard(网卡,NIC)里的.MAC地址,也叫硬件地址,是由48比特/bit长（6字节/byte，1byte=8bits），16进制的数字组成。其中，前三个字节是由IEEE的注册管理机构RA负责给不同厂家分配的代码(高位24位)，也称为“编制上唯一的标识符”（Organizationally Unique Identifier)，后三个字节(低位24位)由各厂家自行指派给生产的适配器接口，称为扩展标识符（唯一性）。
+MAC（Medium/MediaAccess Control,介质访问控制） MAC 地址是收录在 NetworkInterfaceCard(网卡,NIC) 里的.
+MAC地址,也叫硬件地址,是由 48 bit长（6byte，1byte=8bits）的16进制的数字组成。其中，前三个字节是由 
+IEEE 的注册管理机构 RA 负责给不同厂家分配的代码(高位24位)，也称为“编制上唯一的标识符”（Organizationally Unique Identifier)，
+后三个字节(低位24位)由各厂家自行指派给生产的适配器接口，称为扩展标识符（唯一性）。
 
-ff:ff:ff:ff:ff:ff则作为廣播位址。
+ff:ff:ff:ff:ff:ff则作为广播位址。
 01:xx:xx:xx:xx:xx是多播地址，01:00:5e:xx:xx:xx是IPv4多播地址。
 
-其中第1字节的第8Bit（如图中00-50-BA-...对应的0000000-01010000-10111010-...，加粗字体的Bit）标识这个地址是组播地址还是单播地址。这是由以太网的传输协议高字节先传，但每一字节内低位先传的特性所决定的，见IEEE 802.3 3.2.3 Address fields： “The first bit (LSB) shall be used in the Destination Address field as an address type designation bit to identify the Destination Address either as an individual or as a group address. If this bit is 0, it shall indicate that the address field contains an individual address. If this bit is 1, it shall indicate that the address field contains a group address that identifies none, one or more, or all of the stations connected to the LAN. In the Source Address field, the first bit is reserved and set to 0.”。事实上这传输的顺序为000000000000101001011101...“The first bit (LSB)”即是前言的第8Bit。
+其中第 1 字节的第 8 Bit（如图中00-50-BA-...对应的 0000000-01010000-10111010-...，加粗字体的Bit）
+标识这个地址是组播地址还是单播地址。这是由以太网的传输协议高字节先传，但每一字节内低位先传的特性
+所决定的，见 IEEE 802.3 3.2.3 Address fields：
+
+    “The first bit (LSB) shall be used in the Destination Address field as an address type designation
+    bit to identify the Destination Address either as an individual or as a group address. If this bit
+    is 0, it shall indicate that the address field contains an individual address. If this bit is 1, it
+    shall indicate that the address field contains a group address that identifies none, one or more,
+    or all of the stations connected to the LAN. In the Source Address field, the first bit is reserved
+    and set to 0.”。
+
+事实上这传输的顺序为 000000000000101001011101...“The first bit (LSB)”即是前言的第 8 Bit。
 
 
 
 ###IP 地址与 MAC 地址区别
 
 IP地址和MAC地址相同点是它们都唯一，不同的特点主要有：
-1. 对于网络上的某一设备，如一台计算机或一台路由器，其IP地址可变（但必须唯一），而MAC地址是不可变。我们可以根据需要给一台主机指定任意的IP地址，如我们可以给局域网上的某台计算机分配IP地址为192.168.0.112 ，也可以将它改成192.168.0.200。而任一网络设备（如网卡，路由器）一旦生产出来以后，其MAC地址不可由本地连接内的配置进行修改。
-2. 长度不同。IP地址为32位，MAC地址为48位。
-3. 分配依据不同。IP地址的分配是基于网络拓扑，MAC地址的分配是基于制造商。
-4. 寻址协议层不同。IP地址应用于OSI第三层，即网络层，而MAC地址应用在OSI第二层，即数据链路层。 数据链路层协议可以使数据从一个节点传递到相同链路的另一个节点上（通过MAC地址），而网络层协议使数据可以从一个网络传递到另一个网络上（ARP根据目的IP地址，找到中间节点的MAC地址，通过中间节点传送，从而最终到达目的网络）
+
+* 对于网络上的某一设备，如一台计算机或一台路由器，其 IP 地址可变（但必须唯一），而 MAC 地址是不可变。
+我们可以根据需要给一台主机指定任意的 IP 地址，如我们可以给局域网上的某台计算机分配 IP 地址为 192.168.0.112 ，
+也可以将它改成 192.168.0.200。而任一网络设备（如网卡，路由器）一旦生产出来以后，其 MAC 地址不可由本地连接内
+的配置进行修改(实际是可以修改的,如果是虚拟机,那么 MAC 就更随意了)。
+
+* 长度不同。IP地址为32位，MAC地址为48位。
+
+* 分配依据不同。IP 地址的分配是基于网络拓扑，MAC 地址的分配是基于制造商。
+
+* 寻址协议层不同。IP 地址应用于 OSI 第三层，即网络层，而 MAC 地址应用在 OSI 第二层，即数据链路层。 数据链路层
+协议可以使数据从一个节点传递到相同链路的另一个节点上（通过MAC地址），而网络层协议使数据可以从一个网络传递到另
+一个网络上（ARP根据目的IP地址，找到中间节点的MAC地址，通过中间节点传送，从而最终到达目的网络）
 
 
 [Ethernet](http://en.wikipedia.org/wiki/Ethernet_frame)
