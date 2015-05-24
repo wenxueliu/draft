@@ -5,7 +5,7 @@ Export命令用于持久化容器（不是镜像）。所以，我们就需要�
     sudo docker ps -a
 
 接着执行导出：
-	
+
     sudo docker export <CONTAINER ID> > /home/export.tar
 
 最后的结果是一个2.7MB大小的Tar文件（比使用save命令稍微小些）。
