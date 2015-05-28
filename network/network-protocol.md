@@ -104,3 +104,51 @@ Each of the bolded numbers represents a 1 or 0 present in the most significant b
 This bit is also referred to as the Individual/Group bit.
 
 From the perspective of an Ethernet hub device, none of this matters, as all frames are flooded out all ports regardless of their address being unicast, broadcast, or multicast. It makes no sense for an Ethernet hub to distinguish between the three.
+
+
+
+###TRUNK
+
+在网络的分层结构和宽带的合理分配方面，TRUNK 被解释为“端口汇聚”，是带宽扩展和链路备份的一个重要途径。
+TRUNK 把多个物理端口捆绑在一起当作一个逻辑端口使用，可以把多组端口的宽带叠加起来使用。TRUNK 技术可以
+实现 TRUNK 内部多条链路互为备份的功能，即当一条链路出现故障时，不影响其他链路的工作，同时多链路之间还
+能实现流量均衡，就像我们熟悉的打印机池和 MODEM 池一样。
+
+ 但是在最普遍的路由与交换领域，VLAN 的端口聚合也有的叫 TRUNK，不过大多数都叫 TRUNKING，如 CISCO 公司。
+ 所谓的 TRUNKING 是用来在不同的交换机之间进行连接，以保证在跨越多个交换机上建立的同一个 VLAN 的成员能
+ 够相互通讯。其中交换机之间互联用的端口就称为 TRUNK 端口。与一般的交换机的级联不同，TRUNKING 是基于 OSI
+ 第二层数据链路层（DataLinkLayer)TRUNKING 技术，如果你在 2 个交换机上分别划分了多个 VLAN（VLAN也是基于
+ Layer2的），那么分别在两个交换机上的 VLAN10 和 VLAN20 的各自的成员如果要互通，就需要在 A 交换机上设为
+ VLAN10 的端口中取一个和交换机 B 上设为 VLAN10 的某个端口作级联连接。VLAN20 也是这样。那么如果交换机上
+ 划了10个VLAN就需要分别连 10 条线作级联，端口效率就太低了。
+
+ 当交换机支持 TRUNKING 的时候，事情就简单了，只需要 2 个交换机之间有一条级联线，并将对应的端口设置为 Trunk，
+ 这条线路就可以承载交换机上所有 VLAN 的信息。这样的话，就算交换机上设了上百个个 VLAN 也只用1个端口就解决了。
+ 当一个 VLAN 跨过不同的交换机时，在同一 VLAN 上但是却是在不同的交换机上的计算机进行通讯时需要使用 Trunk。
+ Trunk技术使得一条物理线路可以传送多个 VLAN 的数据。交换机从属于某一 VLAN（例如VLAN 3）的端口接收到数据，
+ 在 Trunk 链路上进行传输前，会加上一个标记，表明该数据是 VLAN 3 的；到了对方交换机，交换机会把该标记去掉，
+ 只发送到属于 VLAN 3 的端口如果是不同台的交换机上相同 id 的 vlan 要相互通信，那么可以通过共享的 trunk 端口
+ 就可以实现，如果是同一台上不同 id 的 vlan /不同台不同 id 的 vlan 它们之间要相互通信，需要通过第三方的路由
+ 来实现；
+
+ trunk 在路由和交换中 VLAN 的端口聚合也有的叫 TRUNK.只需要 2 个交换机之间有一条级联线，并将对应的端口设置为
+ Trunk，这条线路就可以承载交换机上所有 VLAN 的信息.现在有些交换机不用设置 Trunk,只要两个交换相连,就会成为 TRUNK.
+
+ 总结一下，我们提到的是两种不同的东西：VLAN Trunk和Link Trunk。
+
+ VLAN Trunk是指一个链路（有可能是Link Trunk）上可以同时传送多个VLAN的流量，一般可以通过GVRP、VTP或者手工来配置。
+
+ Link Trunk标准里称为Link Aggregation，即满足某种要求的一组链路组合起来对上层表现为一条链路，即拥有一个虚拟
+ MAC 地址和流量调度能力（一般根据 SIP、DIP 等等条件），在一定条件下增加了带宽。同样，可以提供手工（static）或者
+ LACP协议动态配置。至于 enable、disable 应该是指是否启用该特性。
+
+ Lacp
+
+ lacp的话是一种链路动态汇聚的协议,如果说你混淆的话就是把 lacp 和 trunk 的另一个概念(端口汇聚)混淆了.而他们接近
+ 的用途:实现内部多条链路互为备份的功能，即当一条链路出现故障时，不影响其他链路的工作，同时多链路之间还能实现流量均衡.
+
+ 1) 在带宽比较紧张的情况下，可以通过逻辑聚合可以扩展带宽到原链路的n倍
+ 2) 在需要对链路进行动态备份的情况下，可以通过配置链路聚合实现同一聚合组各个成员端口之间彼此动态备份
+
+ 而聚合则有很多解释.端口聚合.或者路由聚合.
+
