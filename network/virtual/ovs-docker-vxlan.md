@@ -25,6 +25,15 @@ docker 测试机都连接这个 ovs2，并且 container 创建的时候网络都
 
 下面是部署方法
 
+##安装 docker
+
+###Ubuntu 14.04
+
+    $ sudo add-apt-repository ppa:docker-maint/testing
+    $ sudo apt-get update
+    $ sudo apt-get install docker.io
+    $ docker --version
+
 ##安装openvswitch
 
 ###CentOS
@@ -112,7 +121,7 @@ docker 测试机都连接这个 ovs2，并且 container 创建的时候网络都
     docker.ops-chukong.com:5000/centos6-http:new /usr/bin/supervisord
     $pipework_dir/pipework ovs2 test2 172.16.0.6/16@172.16.0.3
 
-根据自己的环境修改上面内容
+确保以 root 权限执行如上脚本, 根据自己的环境修改上面内容
 
 ###验证
 
