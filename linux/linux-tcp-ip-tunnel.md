@@ -38,7 +38,7 @@ TCP 发送 keepalive 探测消息的间隔时间（秒），用于确认 TCP 连
 * 默认值 9
 * 建议值 3
 
-TCP发送 keepalive 探测消息的间隔时间（秒），用于确认 TCP 连接是否有效。
+如果对方不予应答，TCP发送 keepalive 探测消息的次数，用于确认 TCP 连接是否有效。
 
 ###tcp_retries1
 
@@ -70,7 +70,7 @@ TCP发送 keepalive 探测消息的间隔时间（秒），用于确认 TCP 连�
 * 默认值 60
 * 建议值 2
 
-对于本端断开的socket连接，TCP保持在FIN-WAIT-2状态的时间。对方可能会断开连接或一直不结束连接或
+对于本端断开的 socket 连接，TCP 保持在 FIN-WAIT-2 状态的时间。对方可能会断开连接或一直不结束连接或
 不可预料的进程死亡。默认值为 60 秒。
 
 ###tcp_max_tw_buckets
@@ -414,3 +414,66 @@ web 应用中 listen 函数的 backlog 默认会给我们内核参数的 net.cor
 
 最大的TCP数据发送缓冲
 
+
+两种修改内核参数方法
+
+* 1.使用echo value方式直接追加到文件里如echo "1" >/proc/sys/net/ipv4/tcp_syn_retries，但这种方法设备重启后又会恢复为默认值
+* 2.把参数添加到/etc/sysctl.conf中，然后执行sysctl -p使参数生效，永久生效
+
+
+
+##例子
+
+生产中常用的参数：
+
+    net.ipv4.tcp_syn_retries = 1
+    net.ipv4.tcp_synack_retries = 1
+    net.ipv4.tcp_keepalive_time = 600
+    net.ipv4.tcp_keepalive_probes = 3
+    net.ipv4.tcp_keepalive_intvl =15
+    net.ipv4.tcp_retries2 = 5
+    net.ipv4.tcp_fin_timeout = 2
+    net.ipv4.tcp_max_tw_buckets = 36000
+    net.ipv4.tcp_tw_recycle = 1
+    net.ipv4.tcp_tw_reuse = 1
+    net.ipv4.tcp_max_orphans = 32768
+    net.ipv4.tcp_syncookies = 1
+    net.ipv4.tcp_max_syn_backlog = 16384
+    net.ipv4.tcp_wmem = 8192 131072 16777216
+    net.ipv4.tcp_rmem = 32768 131072 16777216
+    net.ipv4.tcp_mem = 786432 1048576 1572864
+    net.ipv4.ip_local_port_range = 1024 65000
+    net.ipv4.ip_conntrack_max = 65536
+    net.ipv4.netfilter.ip_conntrack_max=65536
+    net.ipv4.netfilter.ip_conntrack_tcp_timeout_established=180
+    net.core.somaxconn = 16384
+    net.core.netdev_max_backlog = 16384
+
+
+    net.core.optmem_max = 10000000
+    #该参数指定了每个套接字所允许的最大缓冲区的大小
+    net.ipv4.conf.all.rp_filter = 1
+    net.ipv4.conf.default.rp_filter = 1
+    #严谨模式 1 (推荐)
+    #松散模式 0
+
+    net.ipv4.tcp_congestion_control = bic
+    #默认推荐设置是 htcp
+    net.ipv4.tcp_keepalive_intvl = 15
+    #keepalive探测包的发送间隔
+    net.ipv4.tcp_slow_start_after_idle = 0
+    #关闭tcp的连接传输的慢启动，即先休止一段时间，再初始化拥塞窗口。
+    net.ipv4.route.gc_timeout = 100
+    #路由缓存刷新频率，当一个路由失败后多长时间跳到另一个路由，默认是300。
+    net.ipv4.tcp_syn_retries = 1
+    #在内核放弃建立连接之前发送SYN包的数量。
+    net.ipv4.icmp_echo_ignore_broadcasts = 1
+    # 避免放大攻击
+    net.ipv4.icmp_ignore_bogus_error_responses = 1
+    # 开启恶意icmp错误消息保护
+    net.inet.udp.checksum=1
+    #防止不正确的udp包的攻击
+    net.ipv4.conf.default.accept_source_route = 0
+    #是否接受含有源路由信息的ip包。参数值为布尔值，1表示接受，0表示不接受。
+    #在充当网关的linux主机上缺省值为1，在一般的linux主机上缺省值为0。
+    #从安全性角度出发，建议你关闭该功能。
