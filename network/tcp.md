@@ -103,6 +103,13 @@ TIPS: 对于四次握手, 很多人感觉太冗余了, 因此, 现在很多应�
 了解三次握手, 四次分手, 我们来看看, 实际中网络通信的过程, 当然, 神器就是 tcpdump
 和 wireshark
 
+* Seq
+* Win
+* Mss
+* Option
+* F P U S .
+
+
 ####建立连接
 
 方式:
@@ -168,7 +175,7 @@ TIPS: 对于四次握手, 很多人感觉太冗余了, 因此, 现在很多应�
 1. 如果是客户端执行主动关闭, 2MSL 没有什么影响, 因为客户端不会端口重用,而且端口是不固定的
 2. 如果是服务端主动关闭, 2MSL 就可能产生影响, 因为服务器一般都是绑定到固定端口
 
-####验证
+验证
 
 1. 服务器启动一个服务(绑定 8000 端口), 客户端连接服务器, 然后停止服务, 重启服务
 2. 客户端连接服务器绑定到固定端口(9000), 连接服务器, 然后, 关闭客户端, 重新连接服务器
@@ -208,8 +215,6 @@ TCP 选项:
 8. TCP 确认仅仅表明TCP已经正确接受了数据
 
 
-
-
 至此, 你可以在简历上说了解 TCP 了. 但要说熟悉, 还需要下文的帮助
 
 ##熟悉
@@ -219,41 +224,123 @@ TCP 选项:
 * MTU
 * MSS
 * 发送窗口
-* 接受窗口: 也叫通告窗口,可变,即滑动窗口, 接收方的流量控制
+* 接受窗口(receiver window（rwnd）): 也叫通告窗口,可变,即滑动窗口, 接收方的流量控制
 * 拥塞窗口cwnd: 发送方的流量控制
 * 路径MTU
 * 延迟确认
 * Nagle算法
-* 滑动窗口: 窗口张开, 窗口合拢, 窗口收缩
+* 滑动窗口(sliding window): 窗口张开, 窗口合拢, 窗口收缩
+* 通告窗口(awnd 是 advised window)
 
 它们相互之间的关系
 
  MTU = MSS + 40
 
+###MSL 与 Seq 的关系
+
+RFC793 中说, ISN 会和一个假的时钟绑在一起, 这个时钟会在每 4 微秒对 ISN 做加一操作, 直到超过 2^32，又从 0 开始. 这样,
+一个 ISN 的周期大约是 4.55 个小时. 因为, 我们假设我们的 TCP Segment 在网络上的存活时间不会超过 Maximum Segment Lifetime
+（缩写为MSL – Wikipedia语条）. 所以，只要 MSL 的值小于 4.55 小时, 那么, 我们就不会重用到 ISN.
+
+###MSL 与 TIME_WAIT 的关系
+
+
+
 ##重传
 
-* RTT:
-* 慢启动: 每收到 n 个确认就把拥塞窗口增加 n 个 MSS
-* 拥塞避免: 慢启动到达临界窗口值，每个往返时间增加 1 个 MSS
-* 超时重传: 拥塞避免阶段
-* 超时重传对拥塞窗口和临界窗口值的影响 : 临界窗口值为没有确认包的数据量的 1/2 (不小于 2 MSS), 拥塞窗口降为 MSS
-* RTO 计算方法 A+2D -> A+4D
-* 快速重传: 拥塞避免阶段,收到 3 个重复的 ack(表明包丢了); 为什么要 3 个，完全是经验值，为了与乱序区别开来
-* 快速重传对拥塞窗口和临界窗口值的影响 : 快速恢复
-* 快速恢复: 临界窗口值为没有确认包的数据量的 1/2 (不小于 2 MSS), 拥塞窗口设置为临界窗口值加 3, 继续保留在拥塞避免阶段
+关于重传, 必然是出现了不期望的结果, 那么, 有哪些不期望的结果, 我们一一列出
+
+###握手阶段
+
+1  客户端向服务器发送 SYN 请求, 服务器一直没有收到客户端的 SYN 请求
+
+2  客户端向服务器发送 SYN 请求, 服务器收到客户端的 SYN 请求, 但是服务器没有应答
+
+3  客户端向服务器发送 SYN 请求, 服务器收到客户端的 SYN 请求, 服务器发送 ACK 和自己的 SYN 请求, 但客户端一直没有收到服务器应答
+
+4  客户端向服务器发送 SYN 请求, 服务器收到客户端的 SYN 请求, 服务器发送 ACK 和自己的 SYN 请求, 客户端收到服务器的应答, 但没有应答服务器的 SYN 请求
+
+5  客户端向服务器发送 SYN 请求, 服务器收到客户端的 SYN 请求, 服务器发送 ACK 和自己的 SYN 请求, 客户端收到服务器的应答, 向服务器发送 ACK, 但是服务器一直没有收到客户端的应答
+
+6  客户端向服务器发送 SYN 请求, 服务器收到客户端的 SYN 请求, 服务器发送 ACK 和自己的 SYN 请求, 客户端收到服务器的应答, 向服务器发送 ACK, 服务器收到客户端的应答
+
+
+对于情况4, 就会出现常见的 syn flood 攻击, 试想, 如果一个客户端发送大量的请求, 但是都不应都服务器的 SYN, 服务器就只能等超时, 在超时阶段,
+该客户端就一直占有这个连接, 如果超时时间很长, 服务器的 SYN 队列很快就满了, 无法处理其他正确的请求.
+
+Linux 下解决办法是设置 tcp_syncookies 的参数 —— 当 SYN 队列满了后，TCP 会通过源地址端口, 目标地址端口和时间戳打造出一个特别的 Sequence Number
+发回去(又叫cookie), 如果是攻击者则不会有响应, 如果是正常连接, 则会把这个 SYN Cookie 发回来, 然后服务端可以通过 cookie 建连接(即使你不在 SYN
+队列中). 请注意, 请先千万别用 tcp_syncookies 来处理正常的大负载的连接的情况. 因为, synccookies 是妥协版的 TCP 协议, 并不严谨. 对于正常的请求,
+你应该调整如下三个参数来处理这种攻击
+
+    tcp_synack_retries    可以用他来减少重试次数;
+    tcp_max_syn_backlog   可以增大SYN连接数;
+    tcp_abort_on_overflow 处理不过来干脆就直接拒绝连接了。
+
+###数据传送阶段
+
+1 客户端发送请求, 服务器没有收到客户端的请求
+2 客户端发送请求, 服务器收到客户端的请求, 但服务器没有应答客户端的请求
+3 客户端发送请求, 服务器收到客户端的请求, 服务器应答客户端的请求, 但客户端没有收到
+
+###分手阶段
+
+1. 客户端发送 FIN, 服务器没有收到客户端的 FIN 请求
+
+2. 客户端发送 FIN, 服务器收到了客户端的 FIN 请求, 但没有 ACK
+
+3. 客户端发送 FIN, 服务器收到了客户端的 FIN 请求, 发送 ACK, 客户端没有收到服务器的 ACK
+
+4. 客户端发送 FIN, 服务器收到了客户端的 FIN 请求, 发送 ACK, 客户端收到了服务器的 ACK, 但服务器一直没有发送 FIN
+
+5. 客户端发送 FIN, 服务器收到了客户端的 FIN 请求, 发送 ACK, 客户端收到了服务器的 ACK, 服务器发送 FIN, 但客户端一直没有收到服务器的 FIN 请求
+
+6. 客户端发送 FIN, 服务器收到了客户端的 FIN 请求, 发送 ACK, 客户端收到了服务器的 ACK, 服务器发送 FIN, 但客户端收到服务器的 FIN 请求, 没有发送 ACK
+
+7. 客户端发送 FIN, 服务器收到了客户端的 FIN 请求, 发送 ACK, 客户端收到了服务器的 ACK, 服务器发送 FIN, 但客户端收到服务器的 FIN 请求, 发送 ACK, 但服务没有收到客户端的 ACK
+
+8. 客户端发送 FIN, 服务器收到了客户端的 FIN 请求, 发送 ACK, 客户端收到了服务器的 ACK, 服务器发送 FIN, 但客户端收到服务器的 FIN 请求, 发送 ACK, 服务收到客户端的 ACK
+
+
+
+
 
 * 延迟确认: 收到数据后直到有数据要回复或者延迟一定时间(200ms)，才确认
 * Nagle 算法: 收到数据后直到有数据要回复或者数量满 1 个MSS，才确认, (TCP_NODELAY 关闭该算法)
 * 糊涂窗口综合症: 窗口更新发生于窗口大小增加了两个 MSS 或最大接受窗口的 1/2 时,发送窗口更新
+* SACK
+* Karn / Partridge Algorithm
+* Jacobson / Karels Algorithm RFC6289
+* Zero Window
+* David D Clark’s 方案
 
-##临界窗口的确认
+##拥塞控制
+
+* RTT:
+* RTO 计算方法 A+2D -> A+4D
+
+* 拥塞避免: 慢启动到达临界窗口值，每个往返时间增加 1 个 MSS
+* 慢启动: 每收到 n 个确认就把拥塞窗口增加 n 个 MSS
+* 快速恢复: 临界窗口值为没有确认包的数据量的 1/2 (不小于 2 MSS), 拥塞窗口设置为临界窗口值加 3, 继续保留在拥塞避免阶段
+
+* 超时重传: 拥塞避免阶段
+* 超时重传对拥塞窗口和临界窗口值的影响 : 临界窗口值为没有确认包的数据量的 1/2 (不小于 2 MSS), 拥塞窗口降为 MSS
+* 快速重传: 拥塞避免阶段,收到 3 个重复的 ack(表明包丢了); 为什么要 3 个，完全是经验值，为了与乱序区别开来
+* 快速重传对拥塞窗口和临界窗口值的影响 : 快速恢复
+
+* TCP Reno
+* TCP New Reno
+
+##临界窗口(ssthresh)的确认
 
 * RFC 2001 丢包时的一半大小
-* Westwood : 作者Saverio Mascolo, 适用于经常发送非拥塞性的丢包环境(无线)
+* Westwood : 作者 Saverio Mascolo, 适用于经常发送非拥塞性的丢包环境(无线)
 * Vega : 通过 RTT 来调整临界窗口值
 * Compound : Windows
 * BIC
 * CUBIC
+* HSTCP(High Speed TCP) 算法
+
 
 
 对于多个丢包, 更好的解决办法:
@@ -261,10 +348,56 @@ TCP 选项:
 * NewReno: RFC 2582, RFC 3782
 * SACK   : RFC 2018
 
+* SO_REUSEPORT
+* SO_REUSEADDR
+
+##精通
+
+关于TIME_WAIT数量太多。从上面的描述我们可以知道，TIME_WAIT是个很重要的状态，但是如果在大并发的短链接下，TIME_WAIT
+就会太多，这也会消耗很多系统资源。只要搜一下，你就会发现，十有八九的处理方式都是教你设置两个参数，一个叫tcp_tw_reuse，
+另一个叫tcp_tw_recycle的参数，这两个参数默认值都是被关闭的，后者recyle比前者resue更为激进，resue要温柔一些。另外，
+如果使用tcp_tw_reuse，必需设置tcp_timestamps=1，否则无效。这里，你一定要注意，打开这两个参数会有比较大的坑——可能会让
+TCP连接出一些诡异的问题（因为如上述一样，如果不等待超时重用连接的话，新的连接可能会建不上。正如官方文档上说的一样
+“ It should not be changed without advice/request of technical experts”）。
+
+关于tcp_tw_reuse。官方文档上说tcp_tw_reuse 加上tcp_timestamps（又叫PAWS, for Protection Against Wrapped Sequence
+Numbers）可以保证协议的角度上的安全，但是你需要tcp_timestamps在两边都被打开（你可以读一下tcp_twsk_unique的源码
+）。我个人估计还是有一些场景会有问题。
+
+关于 tcp_tw_recycle。如果是 tcp_tw_recycle 被打开了话，会假设对端开启了 tcp_timestamps，然后会去比较时间戳，如果
+时间戳变大了，就可以重用。但是，如果对端是一个 NAT 网络的话（如：一个公司只用一个 IP 出公网）或是对端的 IP 被另一
+台重用了，这个事就复杂了。建链接的SYN可能就被直接丢掉了（你可能会看到connection time out的错误）（如果你想观摩一下
+Linux的内核代码，请参看源码 tcp_timewait_state_process）。
+
+关于tcp_max_tw_buckets。这个是控制并发的TIME_WAIT的数量，默认值是180000，如果超限，那么，系统会把多的给destory掉，
+然后在日志里打一个警告（如：time wait bucket table overflow），官网文档说这个参数是用来对抗DDoS攻击的。也说的默认
+值180000并不小。这个还是需要根据实际情况考虑。
+
+建立起连接后，这就意味着五元组[src IP, dst IP, src Port, dst Port, Protocol]已经确定并和某个进程pid绑定，
+这个五元组会被加入到内核里面的sock hash表里，通过这个hash表后续连接就知道这个已存在的连接到底是绑定在哪个
+进程pid上的，而后续报文都会发送到这个pid，不至于导致连接混乱。
 
 ##参考
 
-* RFC5681
+* [RFC5681](http://tools.ietf.org/html/rfc5681)
+* [RFC6582](http://tools.ietf.org/html/rfc6582)
 * TCP/IP 详解卷一
 * Wireshark 网络分析就这么简单
-[RFC 793](http://www.cs.northwestern.edu/~kch670/eecs340/proj2-TCP_IP_State_Transition_Diagram.pdf)
+[RFC 793](http://tools.ietf.org/html/rfc793)
+[RFC 1122](http://tools.ietf.org/html/rfc1122)
+[RFC 6298](http://tools.ietf.org/html/rfc6298)
+[RFC 3990](http://www.rfc-editor.org/rfc/rfc3390.txt)
+[RFC 3649](http://tools.ietf.org/html/rfc3649)
+[linux tcp 相关配置选项](https://www.kernel.org/doc/Documentation/networking/ip-sysctl.txt)
+[RFC 2018](http://tools.ietf.org/html/rfc2018)
+[RFC 2883](http://www.ietf.org/rfc/rfc2883.txt)
+[SACK 性能权衡](http://www.ibm.com/developerworks/cn/linux/l-tcp-sack/)
+[TCP那些事上](http://coolshell.cn/articles/11564.html)
+[TCP那些事下](http://coolshell.cn/articles/11609.html)
+[拥塞避免算法列表](https://en.wikipedia.org/wiki/TCP_congestion-avoidance_algorithm)
+
+附录
+SYN(Synchronize Sequence Numbers)
+ISN(Inital Sequence Number)
+滑动窗口(sliding window)
+ssthresh（slow start threshold）
