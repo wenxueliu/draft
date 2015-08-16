@@ -1,7 +1,7 @@
 #Java Annotations
 
 Java Annotations provide information about the code and they have no direct effect on the code they
-annotate. In this tutorial, we will learn about Java annotations, how to write custom annotation, 
+annotate. In this tutorial, we will learn about Java annotations, how to write custom annotation,
 annotations usage and how to parse annotations using reflection.
 
 Annotations are introduced in Java 1.5 and now it’s heavily used in Java frameworks like Hibernate,
@@ -61,6 +61,15 @@ indicates the kinds of program element to which an annotation type is applicable
 TYPE, METHOD, CONSTRUCTOR, FIELD etc. If Target meta-annotation is not present, then annotation can be used
 on any program element.
 
+* ANNOTATION_TYPE 可以应用到其他注解上
+* CONSTRUCTOR     可以使用到构造器上
+* FIELD           可以使用到域或属性上
+* LOCAL_VARIABLE  可以使用到局部变量上
+* METHOD          可以使用到方法级别的注解上
+* PACKAGE         可以使用到包声明上
+* PARAMETER       可以使用到方法的参数上
+* TYPE            可以使用到一个类的任何元素上
+
 **@Inherited**
 
 indicates that an annotation type is automatically inherited. If user queries the annotation type on a class
@@ -72,6 +81,10 @@ type is found, or the top of the class hierarchy (Object) is reached.
 
 indicates how long annotations with the annotated type are to be retained. It takes RetentionPolicy argument
 whose Possible values are SOURCE, CLASS and RUNTIME
+
+* SOURCE : 表明这个注解会被编译器忽略, 并只会保留在源代码中.
+* CLASS : 表明这个注解会通过编译驻留在 CLASS 文件, 但会被 JVM 在运行时忽略, 正因为如此, 其在运行时不可见.
+* RUNTIME : 表示这个注解会被JVM获取, 并在运行时通过反射获取.
 
 ##Java Built-in Annotations
 
@@ -93,6 +106,11 @@ to use.
 
 This is just to tell compiler to ignore specific warnings they produce, for example using raw types in java
 generics. It’s retention policy is SOURCE and it gets discarded by compiler.
+
+**@SafeVarargs**
+
+断言方法或者构造器的代码不会对参数进行不安全的操作. 在 Java 的后续版本中, 使用这个注解时将会令编译器产生一个
+错误在编译期间防止潜在的不安全操作。
 
 Let’s see a java example showing use of built-in annotations as well as use of custom annotation created by us
 in above example.
@@ -197,3 +215,18 @@ That’s all for the java annotation tutorial, I hope you learned something from
 ##TODO
 javax.annotation.concurrent.GuardedBy
 javax.annotation.Nonnull
+
+
+注解可以满足许多要求，最普遍的是：
+
+向编译器提供信息: 注解可以被编译器用来根据不同的规则产生警告, 甚至错误. 一个例子是 Java8 中 @FunctionalInterface 注解,
+这个注解使得编译器校验被注解的类, 检查它是否是一个正确的函数式接口.
+
+文档: 注解可以被软件应用程序计算代码的质量例如:FindBugs, PMD或者自动生成报告, 例如:用来Jenkins, Jira, Teamcity.
+
+代码生成: 注解可以使用代码中展现的元数据信息来自动生成代码或者 XML 文件, 一个不错的例子是 JAXB.
+
+运行时处理: 在运行时检查的注解可以用做不同的目的, 像单元测试(JUnit), 依赖注入(Spring), 校验, 日志(Log4j), 数据访问(Hibernate)等等。
+
+
+自定义注解:
