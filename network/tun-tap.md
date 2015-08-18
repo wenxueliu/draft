@@ -11,7 +11,7 @@ writes them to the user space program.
 
 The TUN is Virtual Point-to-Point network device.
 TUN driver was designed as low level kernel support for
-IP tunneling. It provides to userland application two interfaces:
+**IP** tunneling. It provides to userland application two interfaces:
 
 - /dev/tunX - character device;
 - tunX - virtual Point-to-Point interface.
@@ -24,7 +24,7 @@ from /dev/tunX device.
 ###What is the TAP ?
 
 The TAP is a Virtual Ethernet network device.
-TAP driver was designed as low level kernel support for Ethernet tunneling.
+TAP driver was designed as low level kernel support for **Ethernet** tunneling.
 It provides to userland application two interfaces:
 
 * /dev/tapX - character device;
@@ -312,9 +312,7 @@ Yes. Linux and FreeBSD drivers support Ethernet bridging.
 
             select(fm, &fds, NULL, NULL, NULL);
 
-            if( FD_ISSET(f1, &fds) ) {
-                l = read(f1,buf,sizeof(buf));
-                    write(f2,buf,l);
+            if( FD_ISSET(f1, &fds) ) { l = read(f1,buf,sizeof(buf)); write(f2,buf,l);
             }
             if( FD_ISSET(f2, &fds) ) {
                 l = read(f2,buf,sizeof(buf));
@@ -396,7 +394,87 @@ int f1, f2;
     }
 ```
 
+Tun/tap 驱动程序中包含两个部分, 一部分是字符设备驱动, 还有一部分是网卡驱动部分. 利用网卡驱动部分接收来自
+TCP/IP 协议栈的网络分包并发送或者反过来将接收到的网络分包传给协议栈处理, 而字符驱动部分则将网络分包在内核
+与用户态之间传送, 模拟物理链路的数据接收和发送. Tun/tap 驱动很好的实现了两种驱动的结合.
+
 ##参考
 
 [tun-tap](http://www.mjmwired.net/kernel/Documentation/networking/tuntap.txt)
 [vtun](http://vtun.sourceforge.net/)
+
+
+##附录
+
+```c
+    #include <unistd.h>
+    #include <stdio.h>
+    #include <curses.h>
+    #include <string.h>
+    #include <assert.h>
+    #include <sys/types.h>
+    #include <sys/socket.h>
+    #include <netinet/in.h>
+    #include <signal.h>
+    #include <unistd.h>
+    #include <linux/if_tun.h>
+    #include <netinet/in.h>
+    #include <sys/ioctl.h>
+    #include <sys/time.h>
+    #include <linux/if.h>
+    #include <netinet/in.h>
+    #include <arpa/inet.h>
+    #include <errno.h>
+    #include <fcntl.h>
+
+    int tun_creat(char *dev,int flags) {
+        struct ifreq ifr;
+        int fd,err;
+        assert(dev != NULL);
+        //you can replace it to tap to create tap device.
+        if ((fd = open ("/dev/net/tun",O_RDWR))<0) {
+            return fd;
+        }
+        memset(&ifr,0,sizeof (ifr));
+        ifr.ifr_flags|=flags;
+        if (*dev != '\0') {
+            strncpy(ifr.ifr_name, dev, IFNAMSIZ);
+        }
+
+        if((err = ioctl(fd,TUNSETIFF,(void *)&ifr))<0) {
+            close (fd);
+            return err;
+        }
+        strcpy(dev,ifr.ifr_name);
+        return fd;
+    }
+
+    int main() {
+        int tun,ret;
+        char tun_name[IFNAMSIZ];
+        unsigned char buf[4096];
+        tun_name[0]='\0';
+        tun = tun_creat(tun_name,IFF_TAP|IFF_NO_PI);//如果需要配置tun设备，则把"IFF_TAP"改成“IFF_TUN”
+        if(tun<0) {
+            perror("tun_create");
+            return 1;
+        }
+        printf("TUN name is %s\n",tun_name);
+        while (1) {
+            unsigned char ip[4];
+            ret = read(tun, buf, sizeof(buf));
+            if (ret < 0) {
+                break;
+            }
+            memcpy(ip, &buf[12], 4);
+            memcpy(&buf[12], &buf[16], 4);
+            memcpy(&buf[16], ip, 4);
+            buf[20] = 0;
+            *((unsigned short*)&buf[22]) += 8;
+            printf("read %d bytes\n", ret);
+            ret = write(tun, buf, ret);
+            printf("write %d bytes\n", ret);
+        }
+        return 0;
+    }
+```
