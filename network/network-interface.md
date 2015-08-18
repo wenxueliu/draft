@@ -120,38 +120,72 @@
 	down  ifconfig  $IFACE  down
 ```
 
-好了，interfaces中对于以太网卡的配置基本上介绍完了。下一篇，青蛙打算介绍interfaces中更进一步的配置，例如ppp、vpn和无线网络等等，敬请期待 :p
-更新： 2013-05-19 这个系列没有继续下去确实很可惜。不过5年过去了，Linux系统的网络配置发生了巨大的变化。所以，重新再写一个关于Linux的系统配置的文章对于SysAdmin 来说还是有意义的。那么，就让青蛙找时间继续吧。
+####虚拟 IP
 
+如何让一个网卡可以有多个 IP, 虚拟 IP　应运而生
+
+    auto   eth0
+    iface  eth0  inet static
+    address        192.168.0.42
+    network        192.168.0.0
+    netmask        255.255.255.0
+    broadcast      192.168.0.255
+    gateway        192.168.0.1
+
+    iface  eth0:1 inet static
+    address        192.168.1.42
+    network        192.168.1.0
+    netmask        255.255.255.0
+    broadcast      192.168.2.255
+    gateway        192.168.1.1
+
+    iface  eth0:2 inet static
+    address        192.168.2.42
+    network        192.168.2.0
+    netmask        255.255.255.0
+    broadcast      192.168.2.255
+    gateway        192.168.2.1
 
 ###Server版本 与 Desktop 版本
 
-在Ubuntu Server版本中，因为只存有命令行模式，所以要想进行网络参数设置，只能通过修改配置文件 /etc/network/interfaces 。
-在Desktop版本中，除了可以修改 /etc/network/interfaces 来进行配置以外；还可以直接在network-manager中配置。通过interfaces 修改的方法参照Server版本。
-如果修改了interfaces ，又配置了network-manager（简称nm），你就会发现出现了一些莫名其妙的问题：
-interfaces 和 nm 中的网络设置不一样，系统实际的IP是哪个？
-有时候莫名其妙的，界面右上角的网络连接图标就丢失了。
-明明在nm中配置了正确的网络设置，为什么就上不了网呢？
+在 Ubuntu Server 版本中, 因为只存有命令行模式, 所以要想进行网络参数设置, 只能通过修改配置文件 /etc/network/interfaces.
+
+在 Desktop 版本中，除了可以修改 /etc/network/interfaces 来进行配置以外; 还可以直接在 network-manager 中配置. 通过 interfaces
+修改的方法参照 Server 版本. 如果修改了 interfaces, 又配置了 network-manager(简称nm), 你就会发现出现了一些莫名其妙的问题:
+
+interfaces 和 nm 中的网络设置不一样, 系统实际的 IP 是哪个? 有时候莫名其妙的, 界面右上角的网络连接图标就丢失了.
+
+明明在 nm 中配置了正确的网络设置, 为什么就上不了网呢?
+
 在 /etc/network/interface 配置的网络, 刚开始好好的, 一旦浏览器访问外网, ip 就变了.
-其实，我们要知道 interfaces 和 nm 之间的关系，这些问题就不难解释了。
-当系统内无第三方网络管理工具（如 nm）时，系统默认使用 interfaces 文件内的参数进行网络配置。
-当系统内安装了 nm 之后，nm 默认接管了系统的网络配置，使用 nm 自己的网络配置参数来进行配置。
-但若用户在安装 nm 之后（Desktop版本默认安装了nm），自己又手动修改了 interfaces 文件，那 nm 就自动停止对系统网络的管理，系统改使用 interfaces 文件内的参数进行网络配置。此时，再去修改 nm 内的参数，不影响系统实际的网络配置。若要让 nm 内的配置生效，必须重新启用nm 接管系统的网络配置 
-现在知道了两者之间的工作关系，再看上面的三个问题：
- 要看nm是否接管，如果没有接管，系统实际的IP设置以 interfaces 中的为准。反之，以 nm 中的为准。
-当 nm 停止接管的时候，网络连接图标就丢失了。
-同样是接管的问题。如果用户希望在Desktop版本中，直接使用 interfaces 进行网络配置，那最好停止 network-manager 。
-network-manager重新接管
-如果在出现上述问题之后，希望能继续使用 nm 来进行网络配置，则需要进行如下操作：
-sudo service network-manager  stop
-sudo rm/var/lib/NetworkManager/NetworkManager.state  
-sudo gedit /etc/NetworkManager/nm-system-settings.conf  
-## 里面有一行：managed=true  
-## 如果你手工改过 /etc/network/interfaces ，nm 会自己把这行改成：managed=false  
-## 将 false 修改成 true  
-sudo service network-manager start
 
+其实，我们要知道 interfaces 和 nm 之间的关系, 这些问题就不难解释了.
 
+当系统内无第三方网络管理工具（如 nm）时, 系统默认使用 interfaces 文件内的参数进行网络配置.
+
+当系统内安装了 nm 之后, nm 默认接管了系统的网络配置, 使用 nm 自己的网络配置参数来进行配置.
+
+但若用户在安装 nm 之后（Desktop版本默认安装了nm）, 自己又手动修改了 interfaces 文件, 那 nm 就自动停止对系统网络的管理,
+系统改使用 interfaces 文件内的参数进行网络配置. 此时, 再去修改 nm 内的参数, 不影响系统实际的网络配置. 若要让 nm 内的配
+置生效，必须重新启用nm 接管系统的网络配置
+
+现在知道了两者之间的工作关系, 再看上面的三个问题:
+
+* 如果 nm 没有接管, 系统实际的 IP 设置以 interfaces 中的为准. 反之, 以 nm 中的为准.
+* 当 nm 停止接管的时候, 网络连接图标就丢失了.
+
+同样是接管的问题. 如果用户希望在 Desktop 版本中, 直接使用 interfaces 进行网络配置, 那最好停止 network-manager. network-manager 重新接管
+如果在出现上述问题之后, 希望能继续使用 nm 来进行网络配置, 则需要进行如下操作：
+
+    sudo service network-manager  stop
+    sudo rm/var/lib/NetworkManager/NetworkManager.state
+    sudo gedit /etc/NetworkManager/nm-system-settings.conf
+
+    ## 里面有一行：managed=true
+    ## 如果你手工改过 /etc/network/interfaces , nm 会自己把这行改成: managed=false
+    ## 将 false 修改成 true
+
+    sudo service network-manager start
 
 ###ubuntu 14.04 重新配置网卡
 
@@ -160,7 +194,7 @@ sudo service network-manager start
     service networking stop
     service networking start
 
-你会发现已经不起作用了, 在 14.04 采用 ifup 和 ifdown 命令来重启网络接口（eth0,eth1, wlan0）
+你会发现已经不起作用了, 在 14.04 采用 ifup 和 ifdown 命令来重启网络接口(eth0, eth1, wlan0)
 这个命令会加载　/etc/networking/interface 中对应接口的配置
 
 如果你　ifdown 或　ifup 命令出错，如　
@@ -180,6 +214,3 @@ sudo service network-manager start
 [1](debian参考手册)
 [2](http://unix.stackexchange.com/questions/50602/cant-ifdown-eth0-main-interface)
 [3](http://gfrog.net/2008/01/config-file-in-debian-interfaces-1)
-
-
-
