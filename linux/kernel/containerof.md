@@ -68,6 +68,14 @@ struct dataNode {
           ____ptr ? hlist_entry(____ptr, type, member) : NULL; \
                })
 
+#define hlist_for_each_entry_rcu(pos, head, member)         \
+        for (pos = hlist_entry_safe (rcu_dereference_raw(hlist_first_rcu(head)),\
+                typeof(*(pos)), member);            \
+            pos;                            \
+            pos = hlist_entry_safe(rcu_dereference_raw(hlist_next_rcu(\
+                 &(pos)->member)), typeof(*(pos)), member))
+        )))))
+
 ###参考
 http://blog.csdn.net/yuzhihui_no1/article/details/38407443
 http://blog.csdn.net/yuzhihui_no1/article/details/38356393
