@@ -304,6 +304,8 @@ guaranteed. That being said standards are not required for operation and
 effectiveness, and most start as unique features which are then submitted to a
 standards body.
 
+![包的接收](vepa_packet_receive.jpg)
+
 [1]: http://www.ieee802.org/1/pages/802.1bg.html "802.1bg"
 [2]: http://www.ieee802.org/1/pages/802.1bh.html "802.1bh"
 
