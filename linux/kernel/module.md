@@ -30,6 +30,9 @@ $ cat hello.c
 
 	module_init(hello_init);
 	module_exit(hello_exit);
+    MODULE_LICENSE("GPL");
+    MODULE_AUTHOR("wenxueliu");
+    MODULE_DESCRIPTION("Hello Module");
 ```
 
 $ cat Makefile
@@ -113,8 +116,27 @@ $ sudo rmmod hello; dmesg | tail -1
     [ 8317.344809] Bye module!
 
 
+##源码分析
 
-##原理分析
+###模块可选信息
+
+模块有一些用来表示相关信息的宏:
+
+    MODULE_LICENSE       用来告诉内核遵循什么协议   GPL GPLv2等
+    MODULE_AUTHOR        作者
+    MODULE_DESCRIPTION   描述
+    MODULE_VERSION       版本
+    MODULE_ALIAS         别名
+
+例如:
+
+    MODULE_LICENSE("GPL");
+    MODULE_AUTHOR("wenxueliu");
+    MODULE_DESCRIPTION("Hello Module");
+    MODULE_ALIAS("test module");  
+
+
+##编译原理分析
 
 当我们写完一个 hello 模块, 只要使用以上的 makefile. 然后 make 一下就行. 假设我们把 hello 模块的源代码放在
 /home/mininet/kernel_test/ 下. 当我们在这个目录运行 make 时, make 是怎么执行的呢?
