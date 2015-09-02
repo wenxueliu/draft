@@ -121,3 +121,4 @@ tcpcopy 是由网易技术部于 2011 年 9 月开源的一个项目, tcpcopy �
 ---------------------------
 [tcpcopy 1.0 使用方法](http://blog.csdn.net/wangbin579/article/details/8950282)_
 [tcpcopy 架构变化](http://blog.csdn.net/wangbin579/article/details/8949315)
+[tcpcopy 实践](http://www.cnblogs.com/zhengyun_ustc/p/tcpcopy.html)
