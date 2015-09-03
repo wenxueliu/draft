@@ -602,6 +602,11 @@ family.  此处用于响应用户消息的接口只接收用户进程的 pid, �
     na = (struct nlattr *)GENLMSG_DATA(&ans);   //验证正确后做消息解析. 
 ```
 
+##参考
+
+https://en.wikipedia.org/wiki/Netlink
+http://www.tuicool.com/articles/7fmYFb
+http://www.linuxjournal.com/article/7356?page=0,0
 
 附录
 
