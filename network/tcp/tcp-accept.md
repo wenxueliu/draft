@@ -1,4 +1,19 @@
 
+
+##数据包的接收
+
+![tcp 接受](tcp_accept.png)
+
+从下往上经过了三层: 网卡驱动, 系统内核空间, 用户态空间的应用. Linux内核使用 sk_buff(socket kernel buffers)
+数据结构描述一个数据包. 当一个新的数据包到达, NIC(network interface controller)调用 DMA engine, 通过 Ring Buffer
+将数据包放置到内核内存区. Ring Buffer 的大小固定, 它不包含实际的数据包, 而是包含了指向 sk_buff 的描述符.
+当 Ring Buffer 满的时候, 新来的数据包将给丢弃. 一旦数据包被成功接收, NIC 发起 CPU 中断, 由内核的中断处理程序
+将数据包传递给 IP 层. 经过 IP 层的处理, 数据包被放入队列等待 TCP 层处理. 每个数据包经过 TCP 层一系列复杂
+的步骤, 更新 TCP 状态机, 最终到达 recv Buffer, 等待被应用接收处理. 有一点需要注意, 数据包到达 recv Buffer,
+TCP 就会回 ACK 确认, 既 TCP 的 ACK 表示数据包已经被操作系统内核收到, 但并不确保应用层一定收到数据(例如这个
+时候系统 crash), 因此一般建议应用协议层也要设计自己的确认机制.
+
+
 下面以一个不太精确却通俗易懂的图来说明之:
 
 ![tcp accept 流程图](tcp_accept.jpg)
