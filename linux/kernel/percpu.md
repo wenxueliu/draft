@@ -17,7 +17,7 @@
 
     DEFINE_PER_CPU(type, name);
 
-避免进程在访问一个 per-CPU 变量时被切换到另外一个处理器上运行或被其它进程抢占：
+避免进程在访问一个 per-CPU 变量时被切换到另外一个处理器上运行或被其它进程抢占:
 
     get_cpu_var(变量)++;
 
@@ -71,14 +71,20 @@
 
 
 
-    //based on Linux V3.14 source code
-    一、概述
-    每cpu变量是最简单也是最重要的同步技术。每cpu变量主要是数据结构数组，系统的每个cpu对应数组的一个元素。一个cpu不应该访问与其它cpu对应的数组元素，另外，它可以随意读或修改它自己的元素而不用担心出现竞争条件，因为它是唯一有资格这么做的cpu。这也意味着每cpu变量基本上只能在特殊情况下使用，也就是当它确定在系统的cpu上的数据在逻辑上是独立的时候。
+//based on Linux V3.14 source code
+##概述
 
-    每个处理器访问自己的副本，无需加锁，可以放入自己的cache中，极大地提高了访问与更新效率。常用于计数器。
+每 CPU 变量是最简单也是最重要的同步技术. 每 CPU 变量主要是数据结构数组, 系统的每个 CPU 对应数组的一个元素.
+一个 CPU 不应该访问与其它 CPU 对应的数组元素, 另外, 它可以随意读或修改它自己的元素而不用担心出现竞争条件,
+因为它是唯一有资格这么做的 CPU. 这也意味着每 CPU 变量基本上只能在特殊情况下使用, 也就是当它确定在系统的
+CPU 上的数据在逻辑上是独立的时候.
 
-    二、相关结构体：
-    1.整体的percpu内存管理信息被收集在struct pcpu_alloc_info结构中
+每个处理器访问自己的副本, 无需加锁, 可以放入自己的 cache 中, 极大地提高了访问与更新效率. 常用于计数器.
+
+##相关结构体：
+
+1.整体的 percpu 内存管理信息被收集在 struct pcpu_alloc_info 结构中
+
     struct pcpu_alloc_info {
         size_t static_size;    //静态定义的percpu变量占用内存区域长度
         size_t reserved_size;    //预留区域，在percpu内存分配指定为预留区域分配时，将使用该区域
@@ -92,15 +98,17 @@
         struct pcpu_group_info groups[];        //该架构下的处理器分组信息
     };
 
-    2.对于处理器的分组信息，内核使用struct pcpu_group_info结构表示
+2. 对于处理器的分组信息, 内核使用 struct pcpu_group_info 结构表示
+
     struct pcpu_group_info {
         int nr_units; //该组的处理器数目
-        //组的percpu内存地址起始地址，即组内处理器数目×处理器percpu虚拟内存递进基本单位
+        //组的percpu内存地址起始地址, 即组内处理器数目*处理器percpu虚拟内存递进基本单位
         unsigned long base_offset;
         unsigned int *cpu_map; //组内cpu对应数组，保存cpu id号
     };
 
-    3.内核使用pcpu_chunk结构管理percpu内存
+3.内核使用pcpu_chunk结构管理percpu内存
+
     struct pcpu_chunk {
         //用来把chunk链接起来形成链表。每一个链表又都放到pcpu_slot数组中，根据chunk中空闲空间的大小决定放到数组的哪个元素中。
         struct list_head list;
@@ -117,25 +125,29 @@
         unsigned long populated[]; /* populated bitmap */
     };
 
-    三、per-cpu初始化
-    在系统初始化期间，start_kernel()函数中调用setup_per_cpu_areas()函数，用于为每个cpu的per-cpu变量副本分配空间，注意这时alloc内存分配器还没建立起来，该函数调用alloc_bootmem函数为初始化期间的这些变量副本分配物理空间。
+##per-cpu初始化
 
-    在建立percpu内存管理机制之前要整理出该架构下的处理器信息，包括处理器如何分组、每组对应的处理器位图、静态定义的percpu变量占用内存区域、每颗处理器percpu虚拟内存递进基本单位等信息。
+在系统初始化期间, start_kernel() 函数中调用 setup_per_cpu_areas() 函数, 用于为每个 cpu 的 per-cpu 变量副本分配空间,
+注意这时 alloc 内存分配器还没建立起来, 该函数调用 alloc_bootmem 函数为初始化期间的这些变量副本分配物理空间.
 
-    1.setup_per_cpu_areas()函数，用于为每个cpu的per-cpu变量副本分配空间
+在建立 percpu 内存管理机制之前要整理出该架构下的处理器信息, 包括处理器如何分组, 每组对应的处理器位图, 静态定义的
+percpu 变量占用内存区域, 每颗处理器 percpu 虚拟内存递进基本单位等信息.
+
+1. setup_per_cpu_areas() 函数, 用于为每个 cpu 的 per-cpu 变量副本分配空间
+
     void __init setup_per_cpu_areas(void)
     {
         unsigned long delta;
         unsigned int cpu;
         int rc;
-        
+
         //为percpu建立第一个chunk
         rc = pcpu_embed_first_chunk(PERCPU_MODULE_RESERVE,
                                     PERCPU_DYNAMIC_RESERVE, PAGE_SIZE, NULL,
                                     pcpu_dfl_fc_alloc, pcpu_dfl_fc_free);
         if (rc < 0)
             panic("Failed to initialize percpu areas.");
-        
+
         //内核为percpu分配了一大段空间，在整个percpu空间中根据cpu个数将percpu的空间分为不同的unit。
         //而pcpu_base_addr表示整个系统中percpu的起始内存地址.
         //__per_cpu_start表示静态分配的percpu起始地址。即节区".data..percpu"中起始地址。
@@ -149,7 +161,8 @@
             __per_cpu_offset[cpu] = delta + pcpu_unit_offsets[cpu];
     }
 
-    1.1 为percpu建立第一个chunk
+1.1 为percpu建立第一个chunk
+
     int __init pcpu_embed_first_chunk(size_t reserved_size, size_t dyn_size,
                                         size_t atom_size,
                                         pcpu_fc_cpu_distance_fn_t cpu_distance_fn,
@@ -161,15 +174,15 @@
         struct pcpu_alloc_info *ai;
         size_t size_sum, areas_size, max_distance;
         int group, i, rc;
-        
+
         //收集整理该架构下的percpu信息，结果放在struct pcpu_alloc_info结构中
         ai = pcpu_build_alloc_info(reserved_size, dyn_size, atom_size,cpu_distance_fn);
         if (IS_ERR(ai))
             return PTR_ERR(ai);
-        
+
         //计算每个cpu占用的percpu内存空间大小，包括静态定义变量占用空间+reserved空间+动态分配空间
         size_sum = ai->static_size + ai->reserved_size + ai->dyn_size;
-        
+
         //areas用来保存每个group的percpu内存起始地址，为其分配空间，做临时存储使用，用完释放掉
         areas_size = PFN_ALIGN(ai->nr_groups * sizeof(void *));    
         areas = memblock_virt_alloc_nopanic(areas_size, 0);
@@ -177,18 +190,18 @@
             rc = -ENOMEM;
             goto out_free;
         }
-        
+
         //针对该系统下的每个group操作，为每个group分配percpu内存区域，前边只是计算出percpu信息，并没有分配percpu的内存空间。
         for (group = 0; group < ai->nr_groups; group++) {
             struct pcpu_group_info *gi = &ai->groups[group];//取出该group下的组信息
             unsigned int cpu = NR_CPUS;
             void *ptr;
-        
+
             //检查cpu_map数组
             for (i = 0; i < gi->nr_units && cpu == NR_CPUS; i++)
                 cpu = gi->cpu_map[i];
             BUG_ON(cpu == NR_CPUS);
-     
+
             //为该group分配percpu内存区域。长度为该group里的cpu数目X每颗处理器的percpu递进单位。
             //函数pcpu_dfl_fc_alloc是从bootmem里取得内存，得到的是物理内存，返回物理地址的内存虚拟地址ptr
             ptr = alloc_fn(cpu, gi->nr_units * ai->unit_size, atom_size);
@@ -200,18 +213,18 @@
             kmemleak_free(ptr);
             //将分配到的改组percpu内存虚拟起始地址保存在areas数组中
             areas[group] = ptr;
-             
+
             //比较每个group的percpu内存地址，保存最小的内存地址，即percpu内存的起始地址
             //为后边计算group的percpu内存地址的偏移量
             base = min(ptr, base);
         }
-        
+
         //为每个group中的每个cpu建立其percpu区域
         for (group = 0; group < ai->nr_groups; group++) {
             //取出该group下的组信息
             struct pcpu_group_info *gi = &ai->groups[group];
             void *ptr = areas[group];//得到该group的percpu内存起始地址
-             
+
             //遍历该组中的cpu，并得到每个cpu对应的percpu内存地址
             for (i = 0; i < gi->nr_units; i++, ptr += ai->unit_size) {
                 if (gi->cpu_map[i] == NR_CPUS) {
@@ -225,7 +238,7 @@
                 free_fn(ptr + size_sum, ai->unit_size - size_sum);
             }
         }
-     
+
         //计算group的percpu内存地址的偏移量
         max_distance = 0;
         for (group = 0; group < ai->nr_groups; group++) {
@@ -239,7 +252,7 @@
             pr_warning("PERCPU: max_distance=0x%zx too large for vmalloc "
                         "space 0x%lx\n", max_distance,VMALLOC_TOTAL);
         }
-        
+
         pr_info("PERCPU: Embedded %zu pages/cpu @%p s%zu r%zu d%zu u%zu\n",
                 PFN_DOWN(size_sum), base, ai->static_size, ai->reserved_size,
                 ai->dyn_size, ai->unit_size);
@@ -247,7 +260,7 @@
         //为percpu建立第一个chunk
         rc = pcpu_setup_first_chunk(ai, base);
         goto out_free;
-        
+
     out_free_areas:
         for (group = 0; group < ai->nr_groups; group++)
             if (areas[group])
@@ -259,7 +272,8 @@
         return rc;
     }
 
-    1.1.1 收集整理该架构下的percpu信息
+1.1.1 收集整理该架构下的percpu信息
+
     static struct pcpu_alloc_info * __init pcpu_build_alloc_info(size_t reserved_size, size_t dyn_size,
                                         size_t atom_size,pcpu_fc_cpu_distance_fn_t cpu_distance_fn)
     {
@@ -273,17 +287,17 @@
         unsigned int cpu, tcpu;
         struct pcpu_alloc_info *ai;
         unsigned int *cpu_map;
-        
+
         /* this function may be called multiple times */
         memset(group_map, 0, sizeof(group_map));
         memset(group_cnt, 0, sizeof(group_cnt));
-        
+
         //计算每个cpu所占有的percpu空间大小，包括静态空间+保留空间+动态空间
         size_sum = PFN_ALIGN(static_size + reserved_size +
                             max_t(size_t, dyn_size, PERCPU_DYNAMIC_EARLY_SIZE));
         //重新计算动态分配的percpu空间大小
         dyn_size = size_sum - static_size - reserved_size;
-     
+
         //计算每个unit的大小，即每个group中的每个cpu占用的percpu内存大小为一个unit
         min_unit_size = max_t(size_t, size_sum, PCPU_MIN_UNIT_SIZE);
         //atom_size为PAGE_SIZE，即4K.将min_unit_size按4K向上舍入，例如min_unit_size=5k，则alloc_size为两个页面大小即8K，若min_unit_size=9k，则alloc_size为三个页面大小即12K
@@ -292,7 +306,7 @@
         while (alloc_size % upa || ((alloc_size / upa) & ~PAGE_MASK))
             upa--;
         max_upa = upa;
-        
+
         //为cpu分组，将接近的cpu分到一组中，因为没有定义cpu_distance_fn函数体，所以所有的cpu分到一个组中。
         //可以得到所有的cpu都是group=0，group_cnt[0]即是该组中的cpu个数
         for_each_possible_cpu(cpu) {
@@ -313,7 +327,7 @@
             group_map[cpu] = group;
             group_cnt[group]++;
         }
-         
+
         /*
         * Expand unit size until address space usage goes over 75%
         * and then as much as possible without using more address
@@ -322,16 +336,16 @@
         last_allocs = INT_MAX;
         for (upa = max_upa; upa; upa--) {
             int allocs = 0, wasted = 0;
-        
+
             if (alloc_size % upa || ((alloc_size / upa) & ~PAGE_MASK))
                 continue;
-        
+
             for (group = 0; group < nr_groups; group++) {
                 int this_allocs = DIV_ROUND_UP(group_cnt[group], upa);
                 allocs += this_allocs;
                 wasted += this_allocs * upa - group_cnt[group];
             }
-        
+
             /*
                 * Don't accept if wastage is over 1/3. The
                 * greater-than comparison ensures upa==1 always
@@ -339,7 +353,7 @@
             */
             if (wasted > num_possible_cpus() / 3)
                 continue;
-        
+
             /* and then don't consume more memory */
             if (allocs > last_allocs)
                 break;
@@ -347,30 +361,30 @@
             best_upa = upa;
         }
         upa = best_upa;
-        
+
         //计算每个group中的cpu个数
         for (group = 0; group < nr_groups; group++)
             nr_units += roundup(group_cnt[group], upa);
-        
+
         //分配pcpu_alloc_info结构空间，并初始化
         ai = pcpu_alloc_alloc_info(nr_groups, nr_units);
         if (!ai)
             return ERR_PTR(-ENOMEM);
-        
+
         //为每个group的cpu_map指针赋值为group[0]，group[0]中的cpu_map中的值初始化为NR_CPUS
         cpu_map = ai->groups[0].cpu_map;
         for (group = 0; group < nr_groups; group++) {
             ai->groups[group].cpu_map = cpu_map;
             cpu_map += roundup(group_cnt[group], upa);
         }
-        
+
         ai->static_size = static_size; //静态percpu变量空间
         ai->reserved_size = reserved_size;//保留percpu变量空间
         ai->dyn_size = dyn_size; //动态分配的percpu变量空间
         ai->unit_size = alloc_size / upa; //每个cpu占用的percpu变量空间
         ai->atom_size = atom_size; //PAGE_SIZE
         ai->alloc_size = alloc_size; //实际分配的空间
-        
+
         for (group = 0, unit = 0; group_cnt[group]; group++) {
             struct pcpu_group_info *gi = &ai->groups[group];
             //设置组内的相对于0地址偏移量，后边会设置真正的对于percpu起始地址的偏移量
@@ -387,7 +401,7 @@
             unit += gi->nr_units;
         }
         BUG_ON(unit != nr_units);
-            
+
         return ai;
     }
 
@@ -1056,4 +1070,7 @@
     五、结构图
     参见附件
 
-http://blog.chinaunix.net/uid-27717694-id-4252214.html 
+##参考
+
+* 深入linux 设备驱动程序内核机制
+* http://blog.chinaunix.net/uid-27717694-id-4252214.html 
