@@ -780,7 +780,7 @@ skb_copy_from_linear_data 来复制 skb_shared_info 的数据.
 
 ![skb 操作](skb_operation.jpeg)
 
-###skb_reserve()
+###skb_reserve(len)
 
 此函数在数据缓存区头部预留一定的空间, 通常被用来在数据缓存区中插入协议首部或者在某个边界上对齐.
 它并没有把数据移出或移入数据缓存区, 而只是简单地更新了数据缓存区的两个指针--分别指向负载起始和
@@ -794,17 +794,17 @@ skb_copy_from_linear_data 来复制 skb_shared_info 的数据.
 当 skb 在协议栈中向下传递时, 每一层协议都把 skb->data 指针向上移动, 然后复制本层首部, 同时更新
 skb->len.
 
-###skb_push()
+###skb_push(len)
 
 此函数在数据缓存区的头部加入一块数据. 修改指向数据区起始的指针 data, 使之往上移 len 字节, 使
 数据区向上扩大 len 字节, 并更新数据区长度 len. 常用于向外发送数据是从协议栈由上到下填充协议头
 
-###skb_put()
+###skb_put(len)
 
 此函数修改指向数据区末尾的指针 tail, 使之往下移 len 字节, 即使数据区向下扩大 len 字节, 并更新
 数据区长度len. 常用于接受外部数据时, 构造包时填充协议头, 与 skb_push 正好相反.
 
-###skb_pull()
+###skb_pull(len)
 
 此函数通过将 data 指针往下移动来在数据区首部忽略 len 字节长度的数据, 通常用于接收到的数据包后
 在各层间由下往上传递时, 上层忽略下层的首部.
