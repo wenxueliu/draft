@@ -1,0 +1,105 @@
+screenshot
+DocumentView
+apvlv
+xchat
+remmina remote desktop client
+qupzilla
+stardict
+
+https://coderwall.com/signin
+http://www.javamex.com/
+http://raspberrypi.stackexchange.com/questions/10480/raspi-camera-board-and-motion
+http://www.zhanxin.info/raspberrypi/2014-01-26-raspberrypi-use-nodejs-to-remote-camera.html
+http://sreeninet.wordpress.com/2014/06/28/netconf-and-yang/
+http://fasterdata.es.net/network-tuning/udp-tuning/
+https://community.emc.com/message/818739
+http://www.cnblogs.com/hoojo/archive/2013/06/14/java_ant_project_target_task_run.html
+http://seeallhearall.blogspot.com/2012/05/netty-tutorial-part-1-introduction-to.html
+http://www.blogjava.net/yongboy/archive/2013/04/09/397559.html
+http://www.infoq.com/cn/articles/netty-concurrent-programming-analysis
+http://blog.csdn.net/column/details/j-u-c.html
+http://blog.csdn.net/xieyuooo/article/details/8572543
+http://www.kafka0102.com/2010/06/167.html
+http://www.luobo360.com/course/271?&0-tsina-1-95620-397232819ff9a47a7b7e80a40613cfe1
+http://danielcompton.net/about
+
+
+----------------------------------------------------------
+OVS
+---------------------------------------------------------
+#http://www.docoreos.com/?p=79
+OVS="openvswitch-2.3.1"
+OVS_TAR=$OVS.tar.gz
+apt-get install -y build-essential fakeroot debhelper \
+                    autoconf automake bzip2 libssl-dev \
+                    openssl graphviz python-all procps \
+                    python-qt4 python-zopeinterface \
+                    python-twisted-conch libtool
+if [  -f $OVS_TAR ]
+then
+    echo "$OVS_TAR has exist"
+else
+    wget http://openvswitch.org/releases/$OVS_TAR
+fi
+if [  -d $OVS ]
+then
+   rm -r $OVS
+fi
+tar -zxvf  $OVS_TAR
+cd $OVS/
+
+dpkg-checkbuilddeps
+
+if [ $? ne 0 ]
+then
+   exit 1
+fi
+
+cd ..
+sudo dpkg -i openvswitch-common_2.3.1-1_amd64.deb openvswitch-switch_2.3.1-1_amd64.deb
+
+ovs-vsctl -V
+lsmod | grep openv
+ps -ef | grep ovs | grep -v grep
+--------------------------------------------------------------
+
+--------------------------------------------------------------
+tox
+--------------------------------------------------------------
+sudo sh -c 'echo "deb http://repo.tox.im/deb/ testing main" > /etc/apt/sources.list.d/toxrepo.list'
+curl -k https://repo.tox.im/toxbuild.pgp | sudo apt-key add -
+sudo apt-get update
+--------------------------------------------------------------
+
+---------------------------------------------
+Tsung
+---------------------------------------------
+http://www.linuxidc.com/Linux/2015-02/112987.htm
+http://www.kongxx.info/blog/?p=205
+
+Tsung 安装
+
+sudo apt-get update
+sudo apt-get install erlang
+sudo apt-get install erlang-src gnuplot perl5
+sudo apt-get install erlang-nox
+sudo apt-get install libtemplate-perl
+wget http://tsung.erlang-projects.org/dist/ubuntu/trusty/tsung_1.5.2a-1_all.deb
+sudo dpkg -i tsung_1.5.2a-1_all.deb
+mkdir -p ~/.tsung/
+cp /usr/share/doc/tsung/examples/http_simple.xml  ~/.tsung/tsung.xml
+--------------------------------------------
+
+
+
+
+    Create /etc/ssl/nginx directory
+    Move CA.crt, nginx-repo.key and nginx-repo.crt files to /etc/ssl/nginx/ directory
+    Run wget http://nginx.org/keys/nginx_signing.key && sudo apt-key add nginx_signing.key
+    Run apt-get install apt-transport-https libgnutls26 libcurl3-gnutls
+    Run printf "deb https://plus-pkgs.nginx.com/ubuntu `lsb_release -cs` nginx-plus\n" >/etc/apt/sources.list.d/nginx-plus.list
+    Copy 90nginx to /etc/apt/apt.conf.d
+    Run apt-get update to update repo information
+    Run apt-get install nginx-plus to install nginx-plus package
+    In order to upgrade from the previous version of nginx-plus, run apt-get update and apt-get install nginx-plus
+
