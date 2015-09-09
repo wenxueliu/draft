@@ -195,7 +195,7 @@ static inline unsigned long long native_read_msr_safe(unsigned int msr,
 
 00676: #define container_of(ptr,  type,  member) ({             \
 
-00677:       const typeof( ((type *)0)- >member ) *__mptr = (ptr);  \
+00677:       const typeof( ((type *)0)->member) *__mptr = (ptr);  \
 
 00678:       (type *)( (char *)__mptr - offsetof(type,member) );})
 
