@@ -3,6 +3,59 @@
 ##附录
 
 ```
+/*
+ * Linux/include/net/netns/generic.h
+ *
+ * generic net pointers
+ */
+
+#ifndef __NET_GENERIC_H__
+#define __NET_GENERIC_H__
+
+#include <linux/bug.h>
+#include <linux/rcupdate.h>
+
+/*
+ * Generic net pointers are to be used by modules to put some private
+ * stuff on the struct net without explicit struct net modification
+ *
+ * The rules are simple:
+ * 1. set pernet_operations->id.  After register_pernet_device you
+ *    will have the id of your private pointer.
+ * 2. set pernet_operations->size to have the code allocate and free
+ *    a private structure pointed to from struct net.
+ * 3. do not change this pointer while the net is alive;
+ * 4. do not try to have any private reference on the net_generic object.
+ *
+ * After accomplishing all of the above, the private pointer can be
+ * accessed with the net_generic() call.
+ */
+
+struct net_generic {
+        unsigned int len;
+        struct rcu_head rcu;
+
+        void *ptr[0];
+};
+
+static inline void *net_generic(const struct net *net, int id)
+{
+        struct net_generic *ng;
+        void *ptr;
+
+        rcu_read_lock();
+        ng = rcu_dereference(net->gen);
+        ptr = ng->ptr[id - 1];
+        rcu_read_unlock();
+
+        return ptr;
+}
+#endif
+
+```
+
+
+```
 /* linux/net/net_namespace.h
 
 /*
@@ -60,7 +113,7 @@ struct net {
 
         atomic64_t              cookie_gen;
 
-        //遍历所有 net 时使用
+        //遍历所有 net 时使用,　头为 net_namespace_list
         struct list_head        list;           /* list of network namespaces */
         struct list_head        cleanup_list;   /* namespaces on death row */
         struct list_head        exit_list;      /* Use only net_mutex */
@@ -127,6 +180,7 @@ struct net {
 #ifdef CONFIG_WEXT_CORE
         struct sk_buff_head     wext_nlevents;
 #endif
+        //放一些私有数据
         struct net_generic __rcu        *gen;
 
         /* Note : following structs are cache line aligned */
