@@ -44,6 +44,80 @@ cache_cache -> kmem_cache -> slab
 
 ###虚拟内存分配
 
+```
+    #include <linux/module.h>  
+    #include <linux/init.h>  
+    #include <linux/kernel.h>   
+    #include <linux/mm.h>  
+    #include <linux/errno.h>  
+    #include <linux/slab.h>  
+    #include <linux/gfp.h>  
+      
+    struct slab_test{  
+        int val;  
+    };  
+      
+    static int n;  
+    struct kmem_cache *test_cachep = NULL;  
+    struct slab_test *object1 = NULL, *object2 = NULL;  
+      
+    void slab_ctor(void *cachep){  
+        printk("slab_ctor is called! object %d has been inited!\n", n);  
+        n++;  
+    }  
+      
+      
+    static int __init slab_test_init(void){  
+        printk("slab test module init\n");  
+        n = 0;  
+        test_cachep = kmem_cache_create("slab_test_cachep", sizeof(struct slab_test), 0, SLAB_HWCACHE_ALIGN, slab_ctor);  
+        if(!test_cachep)  
+            return -ENOMEM;  
+        object1 = kmem_cache_alloc(test_cachep, GFP_KERNEL);  
+        if(!object1)  
+            return -ENOMEM;  
+        else  
+            printk("object one has been created!\n");  
+        object2 = kmem_cache_alloc(test_cachep, GFP_KERNEL);  
+        if(!object2)  
+            return -ENOMEM;  
+        else  
+            printk("object two has been created!\n");  
+        return 0;  
+    }  
+      
+    static void __exit slab_test_exit(void){  
+        printk("slab test module exit\n");  
+        kmem_cache_free(test_cachep, object1);  
+        kmem_cache_free(test_cachep, object2);  
+        if(test_cachep)  
+            kmem_cache_destroy(test_cachep);  
+    }  
+      
+    module_init(slab_test_init);  
+    module_exit(slab_test_exit);  
+    MODULE_LICENSE("GPL");  
+    MODULE_AUTHOR("embeddedlwp@163.com");  
+    MODULE_DESCRIPTION("slab test module");  
+```
+
+ dmesg一下看log:
+
+	[  103.617426] slab test module init
+	[  103.617427] slab_ctor is called! object 0 has been inited!
+	[  103.617429] slab_ctor is called! object 1 has been inited!
+	[  103.617430] slab_ctor is called! object 2 has been inited!
+		                      ............
+		                      ............
+	[  103.617761] slab_ctor is called! object 506 has been inited!
+	[  103.617762] slab_ctor is called! object 507 has been inited!
+	[  103.617763] object one has been created!
+	[  103.617766] object two has been created!
+
+
+当我没有调用kmem_cache_alloc()，只调用kmem_cache_create()的时候是没有调用对象的构造函数的，可以对照源码，调用kmem_cache_create()并没有分配slab，是在创建对象的时候发现没有空闲对象，调用cache_grow()分配一个slab，然后再分配对象。所以这里调用构造函数初始化的object都是刚分配的slab中的。cat/proc/slabinfo看一下，发现最上边出现我们新创建的cache，slab_test_cachep，其中active_objs为2，num_objs为508，正好与我们的实际信息相符合。
+
+
 ##参考
 
 * 深入linux设备驱动程序内核机制
