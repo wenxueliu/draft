@@ -786,6 +786,8 @@ struct nlattr {
  * O := Payload stored in network byte order
  *
  * Note: The N and O flag are mutually exclusive.
+ *
+ * 最高位为是否有内嵌, 次低位为是否是网络字节顺序, 低 14 位为真正的属性
  */
 #define NLA_F_NESTED            (1 << 15)
 #define NLA_F_NET_BYTEORDER     (1 << 14)
