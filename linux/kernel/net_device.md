@@ -1,7 +1,1590 @@
 
+接受 : 设备内存 --> DMA --> 主存 --> 硬件中断 --> 中断处理 --> 软中断 --> 收包(分配skb)
+
+发送 : 主存 --> DMA --> 设备内存 --> 硬件发送 --> 硬件中断 --> 中断处理(释放skb)
+
+dev_queue_xmit_sk() -->__dev_queue_xmit() --> dev_hard_start_xmit()
 
 
 ##附录
+
+```		Linux/net/core/net-sysfs.h
+#ifndef __NET_SYSFS_H__
+#define __NET_SYSFS_H__
+
+int __init netdev_kobject_init(void);
+int netdev_register_kobject(struct net_device *);
+void netdev_unregister_kobject(struct net_device *);
+int net_rx_queue_update_kobjects(struct net_device *, int old_num, int new_num);
+int netdev_queue_update_kobjects(struct net_device *net,
+                                 int old_num, int new_num);
+
+#endif
+
+
+```
+
+```
+/*
+ * Linux/net/core/net-sysfs.c
+ * 
+ * net-sysfs.c - network device class and attributes
+ *
+ * Copyright (c) 2003 Stephen Hemminger <shemminger@osdl.org>
+ *
+ *      This program is free software; you can redistribute it and/or
+ *      modify it under the terms of the GNU General Public License
+ *      as published by the Free Software Foundation; either version
+ *      2 of the License, or (at your option) any later version.
+ */
+
+#include <linux/capability.h>
+#include <linux/kernel.h>
+#include <linux/netdevice.h>
+#include <net/switchdev.h>
+#include <linux/if_arp.h>
+#include <linux/slab.h>
+#include <linux/nsproxy.h>
+#include <net/sock.h>
+#include <net/net_namespace.h>
+#include <linux/rtnetlink.h>
+#include <linux/vmalloc.h>
+#include <linux/export.h>
+#include <linux/jiffies.h>
+#include <linux/pm_runtime.h>
+#include <linux/of.h>
+
+#include "net-sysfs.h"
+
+#ifdef CONFIG_SYSFS
+static const char fmt_hex[] = "%#x\n";
+static const char fmt_long_hex[] = "%#lx\n";
+static const char fmt_dec[] = "%d\n";
+static const char fmt_udec[] = "%u\n";
+static const char fmt_ulong[] = "%lu\n";
+static const char fmt_u64[] = "%llu\n";
+
+static inline int dev_isalive(const struct net_device *dev)
+{
+        return dev->reg_state <= NETREG_REGISTERED;
+}
+
+/* use same locking rules as GIF* ioctl's */
+static ssize_t netdev_show(const struct device *dev,
+                           struct device_attribute *attr, char *buf,
+                           ssize_t (*format)(const struct net_device *, char *))
+{
+        struct net_device *ndev = to_net_dev(dev);
+        ssize_t ret = -EINVAL;
+
+        read_lock(&dev_base_lock);
+        if (dev_isalive(ndev))
+                ret = (*format)(ndev, buf);
+        read_unlock(&dev_base_lock);
+
+        return ret;
+}
+
+/* generate a show function for simple field */
+#define NETDEVICE_SHOW(field, format_string)                            \
+static ssize_t format_##field(const struct net_device *dev, char *buf)  \
+{                                                                       \
+        return sprintf(buf, format_string, dev->field);                 \
+}                                                                       \
+static ssize_t field##_show(struct device *dev,                         \
+                            struct device_attribute *attr, char *buf)   \
+{                                                                       \
+        return netdev_show(dev, attr, buf, format_##field);             \
+}                                                                       \
+
+#define NETDEVICE_SHOW_RO(field, format_string)                         \
+NETDEVICE_SHOW(field, format_string);                                   \
+static DEVICE_ATTR_RO(field)
+
+#define NETDEVICE_SHOW_RW(field, format_string)                         \
+NETDEVICE_SHOW(field, format_string);                                   \
+static DEVICE_ATTR_RW(field)
+
+/* use same locking and permission rules as SIF* ioctl's */
+static ssize_t netdev_store(struct device *dev, struct device_attribute *attr,
+                            const char *buf, size_t len,
+                            int (*set)(struct net_device *, unsigned long))
+{
+        struct net_device *netdev = to_net_dev(dev);
+        struct net *net = dev_net(netdev);
+        unsigned long new;
+        int ret = -EINVAL;
+
+        if (!ns_capable(net->user_ns, CAP_NET_ADMIN))
+                return -EPERM;
+
+        ret = kstrtoul(buf, 0, &new);
+        if (ret)
+                goto err;
+
+        if (!rtnl_trylock())
+                return restart_syscall();
+
+        if (dev_isalive(netdev)) {
+                if ((ret = (*set)(netdev, new)) == 0)
+                        ret = len;
+        }
+        rtnl_unlock();
+ err:
+        return ret;
+}
+
+NETDEVICE_SHOW_RO(dev_id, fmt_hex);
+NETDEVICE_SHOW_RO(dev_port, fmt_dec);
+NETDEVICE_SHOW_RO(addr_assign_type, fmt_dec);
+NETDEVICE_SHOW_RO(addr_len, fmt_dec);
+NETDEVICE_SHOW_RO(ifindex, fmt_dec);
+NETDEVICE_SHOW_RO(type, fmt_dec);
+NETDEVICE_SHOW_RO(link_mode, fmt_dec);
+
+static ssize_t iflink_show(struct device *dev, struct device_attribute *attr,
+                           char *buf)
+{
+        struct net_device *ndev = to_net_dev(dev);
+
+        return sprintf(buf, fmt_dec, dev_get_iflink(ndev));
+}
+static DEVICE_ATTR_RO(iflink);
+
+static ssize_t format_name_assign_type(const struct net_device *dev, char *buf)
+{
+        return sprintf(buf, fmt_dec, dev->name_assign_type);
+}
+
+static ssize_t name_assign_type_show(struct device *dev,
+                                     struct device_attribute *attr,
+                                     char *buf)
+{
+        struct net_device *ndev = to_net_dev(dev);
+        ssize_t ret = -EINVAL;
+
+        if (ndev->name_assign_type != NET_NAME_UNKNOWN)
+                ret = netdev_show(dev, attr, buf, format_name_assign_type);
+
+        return ret;
+}
+static DEVICE_ATTR_RO(name_assign_type);
+
+/* use same locking rules as GIFHWADDR ioctl's */
+static ssize_t address_show(struct device *dev, struct device_attribute *attr,
+                            char *buf)
+{
+        struct net_device *ndev = to_net_dev(dev);
+        ssize_t ret = -EINVAL;
+
+        read_lock(&dev_base_lock);
+        if (dev_isalive(ndev))
+                ret = sysfs_format_mac(buf, ndev->dev_addr, ndev->addr_len);
+        read_unlock(&dev_base_lock);
+        return ret;
+}
+static DEVICE_ATTR_RO(address);
+
+static ssize_t broadcast_show(struct device *dev,
+                              struct device_attribute *attr, char *buf)
+{
+        struct net_device *ndev = to_net_dev(dev);
+        if (dev_isalive(ndev))
+                return sysfs_format_mac(buf, ndev->broadcast, ndev->addr_len);
+        return -EINVAL;
+}
+static DEVICE_ATTR_RO(broadcast);
+
+static int change_carrier(struct net_device *dev, unsigned long new_carrier)
+{
+        if (!netif_running(dev))
+                return -EINVAL;
+        return dev_change_carrier(dev, (bool) new_carrier);
+}
+
+static ssize_t carrier_store(struct device *dev, struct device_attribute *attr,
+                             const char *buf, size_t len)
+{
+        return netdev_store(dev, attr, buf, len, change_carrier);
+}
+
+static ssize_t carrier_show(struct device *dev,
+                            struct device_attribute *attr, char *buf)
+{
+        struct net_device *netdev = to_net_dev(dev);
+        if (netif_running(netdev)) {
+                return sprintf(buf, fmt_dec, !!netif_carrier_ok(netdev));
+        }
+        return -EINVAL;
+}
+static DEVICE_ATTR_RW(carrier);
+
+static ssize_t speed_show(struct device *dev,
+                          struct device_attribute *attr, char *buf)
+{
+        struct net_device *netdev = to_net_dev(dev);
+        int ret = -EINVAL;
+
+        if (!rtnl_trylock())
+                return restart_syscall();
+
+        if (netif_running(netdev)) {
+                struct ethtool_cmd cmd;
+                if (!__ethtool_get_settings(netdev, &cmd))
+                        ret = sprintf(buf, fmt_udec, ethtool_cmd_speed(&cmd));
+        }
+        rtnl_unlock();
+        return ret;
+}
+static DEVICE_ATTR_RO(speed);
+
+static ssize_t duplex_show(struct device *dev,
+                           struct device_attribute *attr, char *buf)
+{
+        struct net_device *netdev = to_net_dev(dev);
+        int ret = -EINVAL;
+
+        if (!rtnl_trylock())
+                return restart_syscall();
+
+        if (netif_running(netdev)) {
+                struct ethtool_cmd cmd;
+                if (!__ethtool_get_settings(netdev, &cmd)) {
+                        const char *duplex;
+                        switch (cmd.duplex) {
+                        case DUPLEX_HALF:
+                                duplex = "half";
+                                break;
+                        case DUPLEX_FULL:
+                                duplex = "full";
+                                break;
+                        default:
+                                duplex = "unknown";
+                                break;
+                        }
+                        ret = sprintf(buf, "%s\n", duplex);
+                }
+        }
+        rtnl_unlock();
+        return ret;
+}
+static DEVICE_ATTR_RO(duplex);
+
+static ssize_t dormant_show(struct device *dev,
+                            struct device_attribute *attr, char *buf)
+{
+        struct net_device *netdev = to_net_dev(dev);
+
+        if (netif_running(netdev))
+                return sprintf(buf, fmt_dec, !!netif_dormant(netdev));
+
+        return -EINVAL;
+}
+static DEVICE_ATTR_RO(dormant);
+
+static const char *const operstates[] = {
+        "unknown",
+        "notpresent", /* currently unused */
+        "down",
+        "lowerlayerdown",
+        "testing", /* currently unused */
+        "dormant",
+        "up"
+};
+
+static ssize_t operstate_show(struct device *dev,
+                              struct device_attribute *attr, char *buf)
+{
+        const struct net_device *netdev = to_net_dev(dev);
+        unsigned char operstate;
+
+        read_lock(&dev_base_lock);
+        operstate = netdev->operstate;
+        if (!netif_running(netdev))
+                operstate = IF_OPER_DOWN;
+        read_unlock(&dev_base_lock);
+
+        if (operstate >= ARRAY_SIZE(operstates))
+                return -EINVAL; /* should not happen */
+
+        return sprintf(buf, "%s\n", operstates[operstate]);
+}
+static DEVICE_ATTR_RO(operstate);
+
+static ssize_t carrier_changes_show(struct device *dev,
+                                    struct device_attribute *attr,
+                                    char *buf)
+{
+        struct net_device *netdev = to_net_dev(dev);
+        return sprintf(buf, fmt_dec,
+                       atomic_read(&netdev->carrier_changes));
+}
+static DEVICE_ATTR_RO(carrier_changes);
+
+/* read-write attributes */
+
+static int change_mtu(struct net_device *dev, unsigned long new_mtu)
+{
+        return dev_set_mtu(dev, (int) new_mtu);
+}
+
+static ssize_t mtu_store(struct device *dev, struct device_attribute *attr,
+                         const char *buf, size_t len)
+{
+        return netdev_store(dev, attr, buf, len, change_mtu);
+}
+NETDEVICE_SHOW_RW(mtu, fmt_dec);
+
+static int change_flags(struct net_device *dev, unsigned long new_flags)
+{
+        return dev_change_flags(dev, (unsigned int) new_flags);
+}
+
+static ssize_t flags_store(struct device *dev, struct device_attribute *attr,
+                           const char *buf, size_t len)
+{
+        return netdev_store(dev, attr, buf, len, change_flags);
+}
+NETDEVICE_SHOW_RW(flags, fmt_hex);
+
+static int change_tx_queue_len(struct net_device *dev, unsigned long new_len)
+{
+        dev->tx_queue_len = new_len;
+        return 0;
+}
+
+static ssize_t tx_queue_len_store(struct device *dev,
+                                  struct device_attribute *attr,
+                                  const char *buf, size_t len)
+{
+        if (!capable(CAP_NET_ADMIN))
+                return -EPERM;
+
+        return netdev_store(dev, attr, buf, len, change_tx_queue_len);
+}
+NETDEVICE_SHOW_RW(tx_queue_len, fmt_ulong);
+
+static int change_gro_flush_timeout(struct net_device *dev, unsigned long val)
+{
+        dev->gro_flush_timeout = val;
+        return 0;
+}
+
+static ssize_t gro_flush_timeout_store(struct device *dev,
+                                  struct device_attribute *attr,
+                                  const char *buf, size_t len)
+{
+        if (!capable(CAP_NET_ADMIN))
+                return -EPERM;
+
+        return netdev_store(dev, attr, buf, len, change_gro_flush_timeout);
+}
+NETDEVICE_SHOW_RW(gro_flush_timeout, fmt_ulong);
+
+static ssize_t ifalias_store(struct device *dev, struct device_attribute *attr,
+                             const char *buf, size_t len)
+{
+        struct net_device *netdev = to_net_dev(dev);
+        struct net *net = dev_net(netdev);
+        size_t count = len;
+        ssize_t ret;
+
+        if (!ns_capable(net->user_ns, CAP_NET_ADMIN))
+                return -EPERM;
+
+        /* ignore trailing newline */
+        if (len >  0 && buf[len - 1] == '\n')
+                --count;
+
+        if (!rtnl_trylock())
+                return restart_syscall();
+        ret = dev_set_alias(netdev, buf, count);
+        rtnl_unlock();
+
+        return ret < 0 ? ret : len;
+}
+
+static ssize_t ifalias_show(struct device *dev,
+                            struct device_attribute *attr, char *buf)
+{
+        const struct net_device *netdev = to_net_dev(dev);
+        ssize_t ret = 0;
+
+        if (!rtnl_trylock())
+                return restart_syscall();
+        if (netdev->ifalias)
+                ret = sprintf(buf, "%s\n", netdev->ifalias);
+        rtnl_unlock();
+        return ret;
+}
+static DEVICE_ATTR_RW(ifalias);
+
+static int change_group(struct net_device *dev, unsigned long new_group)
+{
+        dev_set_group(dev, (int) new_group);
+        return 0;
+}
+
+static ssize_t group_store(struct device *dev, struct device_attribute *attr,
+                           const char *buf, size_t len)
+{
+        return netdev_store(dev, attr, buf, len, change_group);
+}
+NETDEVICE_SHOW(group, fmt_dec);
+static DEVICE_ATTR(netdev_group, S_IRUGO | S_IWUSR, group_show, group_store);
+
+static ssize_t phys_port_id_show(struct device *dev,
+                                 struct device_attribute *attr, char *buf)
+{
+        struct net_device *netdev = to_net_dev(dev);
+        ssize_t ret = -EINVAL;
+
+        if (!rtnl_trylock())
+                return restart_syscall();
+
+        if (dev_isalive(netdev)) {
+                struct netdev_phys_item_id ppid;
+
+                ret = dev_get_phys_port_id(netdev, &ppid);
+                if (!ret)
+                        ret = sprintf(buf, "%*phN\n", ppid.id_len, ppid.id);
+        }
+        rtnl_unlock();
+
+        return ret;
+}
+static DEVICE_ATTR_RO(phys_port_id);
+
+static ssize_t phys_port_name_show(struct device *dev,
+                                   struct device_attribute *attr, char *buf)
+{
+        struct net_device *netdev = to_net_dev(dev);
+        ssize_t ret = -EINVAL;
+
+        if (!rtnl_trylock())
+                return restart_syscall();
+
+        if (dev_isalive(netdev)) {
+                char name[IFNAMSIZ];
+
+                ret = dev_get_phys_port_name(netdev, name, sizeof(name));
+                if (!ret)
+                        ret = sprintf(buf, "%s\n", name);
+        }
+        rtnl_unlock();
+
+        return ret;
+}
+static DEVICE_ATTR_RO(phys_port_name);
+
+static ssize_t phys_switch_id_show(struct device *dev,
+                                   struct device_attribute *attr, char *buf)
+{
+        struct net_device *netdev = to_net_dev(dev);
+        ssize_t ret = -EINVAL;
+
+        if (!rtnl_trylock())
+                return restart_syscall();
+
+        if (dev_isalive(netdev)) {
+                struct netdev_phys_item_id ppid;
+
+                ret = netdev_switch_parent_id_get(netdev, &ppid);
+                if (!ret)
+                        ret = sprintf(buf, "%*phN\n", ppid.id_len, ppid.id);
+        }
+        rtnl_unlock();
+
+        return ret;
+}
+static DEVICE_ATTR_RO(phys_switch_id);
+
+static struct attribute *net_class_attrs[] = {
+        &dev_attr_netdev_group.attr,
+        &dev_attr_type.attr,
+        &dev_attr_dev_id.attr,
+        &dev_attr_dev_port.attr,
+        &dev_attr_iflink.attr,
+        &dev_attr_ifindex.attr,
+        &dev_attr_name_assign_type.attr,
+        &dev_attr_addr_assign_type.attr,
+        &dev_attr_addr_len.attr,
+        &dev_attr_link_mode.attr,
+        &dev_attr_address.attr,
+        &dev_attr_broadcast.attr,
+        &dev_attr_speed.attr,
+        &dev_attr_duplex.attr,
+        &dev_attr_dormant.attr,
+        &dev_attr_operstate.attr,
+        &dev_attr_carrier_changes.attr,
+        &dev_attr_ifalias.attr,
+        &dev_attr_carrier.attr,
+        &dev_attr_mtu.attr,
+        &dev_attr_flags.attr,
+        &dev_attr_tx_queue_len.attr,
+        &dev_attr_gro_flush_timeout.attr,
+        &dev_attr_phys_port_id.attr,
+        &dev_attr_phys_port_name.attr,
+        &dev_attr_phys_switch_id.attr,
+        NULL,
+};
+ATTRIBUTE_GROUPS(net_class);
+
+/* Show a given an attribute in the statistics group */
+static ssize_t netstat_show(const struct device *d,
+                            struct device_attribute *attr, char *buf,
+                            unsigned long offset)
+{
+        struct net_device *dev = to_net_dev(d);
+        ssize_t ret = -EINVAL;
+
+        WARN_ON(offset > sizeof(struct rtnl_link_stats64) ||
+                        offset % sizeof(u64) != 0);
+
+        read_lock(&dev_base_lock);
+        if (dev_isalive(dev)) {
+                struct rtnl_link_stats64 temp;
+                const struct rtnl_link_stats64 *stats = dev_get_stats(dev, &temp);
+
+                ret = sprintf(buf, fmt_u64, *(u64 *)(((u8 *) stats) + offset));
+        }
+        read_unlock(&dev_base_lock);
+        return ret;
+}
+
+/* generate a read-only statistics attribute */
+#define NETSTAT_ENTRY(name)                                             \
+static ssize_t name##_show(struct device *d,                            \
+                           struct device_attribute *attr, char *buf)    \
+{                                                                       \
+        return netstat_show(d, attr, buf,                               \
+                            offsetof(struct rtnl_link_stats64, name));  \
+}                                                                       \
+static DEVICE_ATTR_RO(name)
+
+NETSTAT_ENTRY(rx_packets);
+NETSTAT_ENTRY(tx_packets);
+NETSTAT_ENTRY(rx_bytes);
+NETSTAT_ENTRY(tx_bytes);
+NETSTAT_ENTRY(rx_errors);
+NETSTAT_ENTRY(tx_errors);
+NETSTAT_ENTRY(rx_dropped);
+NETSTAT_ENTRY(tx_dropped);
+NETSTAT_ENTRY(multicast);
+NETSTAT_ENTRY(collisions);
+NETSTAT_ENTRY(rx_length_errors);
+NETSTAT_ENTRY(rx_over_errors);
+NETSTAT_ENTRY(rx_crc_errors);
+NETSTAT_ENTRY(rx_frame_errors);
+NETSTAT_ENTRY(rx_fifo_errors);
+NETSTAT_ENTRY(rx_missed_errors);
+NETSTAT_ENTRY(tx_aborted_errors);
+NETSTAT_ENTRY(tx_carrier_errors);
+NETSTAT_ENTRY(tx_fifo_errors);
+NETSTAT_ENTRY(tx_heartbeat_errors);
+NETSTAT_ENTRY(tx_window_errors);
+NETSTAT_ENTRY(rx_compressed);
+NETSTAT_ENTRY(tx_compressed);
+
+static struct attribute *netstat_attrs[] = {
+        &dev_attr_rx_packets.attr,
+        &dev_attr_tx_packets.attr,
+        &dev_attr_rx_bytes.attr,
+        &dev_attr_tx_bytes.attr,
+        &dev_attr_rx_errors.attr,
+        &dev_attr_tx_errors.attr,
+        &dev_attr_rx_dropped.attr,
+        &dev_attr_tx_dropped.attr,
+        &dev_attr_multicast.attr,
+        &dev_attr_collisions.attr,
+        &dev_attr_rx_length_errors.attr,
+        &dev_attr_rx_over_errors.attr,
+        &dev_attr_rx_crc_errors.attr,
+        &dev_attr_rx_frame_errors.attr,
+        &dev_attr_rx_fifo_errors.attr,
+        &dev_attr_rx_missed_errors.attr,
+        &dev_attr_tx_aborted_errors.attr,
+        &dev_attr_tx_carrier_errors.attr,
+        &dev_attr_tx_fifo_errors.attr,
+        &dev_attr_tx_heartbeat_errors.attr,
+        &dev_attr_tx_window_errors.attr,
+        &dev_attr_rx_compressed.attr,
+        &dev_attr_tx_compressed.attr,
+        NULL
+};
+
+
+static struct attribute_group netstat_group = {
+        .name  = "statistics",
+        .attrs  = netstat_attrs,
+};
+
+#if IS_ENABLED(CONFIG_WIRELESS_EXT) || IS_ENABLED(CONFIG_CFG80211)
+static struct attribute *wireless_attrs[] = {
+        NULL
+};
+
+static struct attribute_group wireless_group = {
+        .name = "wireless",
+        .attrs = wireless_attrs,
+};
+#endif
+
+#else /* CONFIG_SYSFS */
+#define net_class_groups        NULL
+#endif /* CONFIG_SYSFS */
+
+#ifdef CONFIG_SYSFS
+#define to_rx_queue_attr(_attr) container_of(_attr,             \
+    struct rx_queue_attribute, attr)
+
+#define to_rx_queue(obj) container_of(obj, struct netdev_rx_queue, kobj)
+
+static ssize_t rx_queue_attr_show(struct kobject *kobj, struct attribute *attr,
+                                  char *buf)
+{
+        struct rx_queue_attribute *attribute = to_rx_queue_attr(attr);
+        struct netdev_rx_queue *queue = to_rx_queue(kobj);
+
+        if (!attribute->show)
+                return -EIO;
+
+        return attribute->show(queue, attribute, buf);
+}
+
+static ssize_t rx_queue_attr_store(struct kobject *kobj, struct attribute *attr,
+                                   const char *buf, size_t count)
+{
+        struct rx_queue_attribute *attribute = to_rx_queue_attr(attr);
+        struct netdev_rx_queue *queue = to_rx_queue(kobj);
+
+        if (!attribute->store)
+                return -EIO;
+
+        return attribute->store(queue, attribute, buf, count);
+}
+
+static const struct sysfs_ops rx_queue_sysfs_ops = {
+        .show = rx_queue_attr_show,
+        .store = rx_queue_attr_store,
+};
+
+#ifdef CONFIG_RPS
+static ssize_t show_rps_map(struct netdev_rx_queue *queue,
+                            struct rx_queue_attribute *attribute, char *buf)
+{
+        struct rps_map *map;
+        cpumask_var_t mask;
+        int i, len;
+
+        if (!zalloc_cpumask_var(&mask, GFP_KERNEL))
+                return -ENOMEM;
+
+        rcu_read_lock();
+        map = rcu_dereference(queue->rps_map);
+        if (map)
+                for (i = 0; i < map->len; i++)
+                        cpumask_set_cpu(map->cpus[i], mask);
+
+        len = snprintf(buf, PAGE_SIZE, "%*pb\n", cpumask_pr_args(mask));
+        rcu_read_unlock();
+        free_cpumask_var(mask);
+
+        return len < PAGE_SIZE ? len : -EINVAL;
+}
+
+static ssize_t store_rps_map(struct netdev_rx_queue *queue,
+                      struct rx_queue_attribute *attribute,
+                      const char *buf, size_t len)
+{
+        struct rps_map *old_map, *map;
+        cpumask_var_t mask;
+        int err, cpu, i;
+        static DEFINE_SPINLOCK(rps_map_lock);
+
+        if (!capable(CAP_NET_ADMIN))
+                return -EPERM;
+
+        if (!alloc_cpumask_var(&mask, GFP_KERNEL))
+                return -ENOMEM;
+
+        err = bitmap_parse(buf, len, cpumask_bits(mask), nr_cpumask_bits);
+        if (err) {
+                free_cpumask_var(mask);
+                return err;
+        }
+
+        map = kzalloc(max_t(unsigned int,
+            RPS_MAP_SIZE(cpumask_weight(mask)), L1_CACHE_BYTES),
+            GFP_KERNEL);
+        if (!map) {
+                free_cpumask_var(mask);
+                return -ENOMEM;
+        }
+
+        i = 0;
+        for_each_cpu_and(cpu, mask, cpu_online_mask)
+                map->cpus[i++] = cpu;
+
+        if (i)
+                map->len = i;
+        else {
+                kfree(map);
+                map = NULL;
+        }
+
+        spin_lock(&rps_map_lock);
+        old_map = rcu_dereference_protected(queue->rps_map,
+                                            lockdep_is_held(&rps_map_lock));
+        rcu_assign_pointer(queue->rps_map, map);
+        spin_unlock(&rps_map_lock);
+
+        if (map)
+                static_key_slow_inc(&rps_needed);
+        if (old_map) {
+                kfree_rcu(old_map, rcu);
+                static_key_slow_dec(&rps_needed);
+        }
+        free_cpumask_var(mask);
+        return len;
+}
+
+static ssize_t show_rps_dev_flow_table_cnt(struct netdev_rx_queue *queue,
+                                           struct rx_queue_attribute *attr,
+                                           char *buf)
+{
+        struct rps_dev_flow_table *flow_table;
+        unsigned long val = 0;
+
+        rcu_read_lock();
+        flow_table = rcu_dereference(queue->rps_flow_table);
+        if (flow_table)
+                val = (unsigned long)flow_table->mask + 1;
+        rcu_read_unlock();
+
+        return sprintf(buf, "%lu\n", val);
+}
+
+static void rps_dev_flow_table_release(struct rcu_head *rcu)
+{
+        struct rps_dev_flow_table *table = container_of(rcu,
+            struct rps_dev_flow_table, rcu);
+        vfree(table);
+}
+
+static ssize_t store_rps_dev_flow_table_cnt(struct netdev_rx_queue *queue,
+                                     struct rx_queue_attribute *attr,
+                                     const char *buf, size_t len)
+{
+        unsigned long mask, count;
+        struct rps_dev_flow_table *table, *old_table;
+        static DEFINE_SPINLOCK(rps_dev_flow_lock);
+        int rc;
+
+        if (!capable(CAP_NET_ADMIN))
+                return -EPERM;
+
+        rc = kstrtoul(buf, 0, &count);
+        if (rc < 0)
+                return rc;
+
+        if (count) {
+                mask = count - 1;
+                /* mask = roundup_pow_of_two(count) - 1;
+                 * without overflows...
+                 */
+                while ((mask | (mask >> 1)) != mask)
+                        mask |= (mask >> 1);
+                /* On 64 bit arches, must check mask fits in table->mask (u32),
+                 * and on 32bit arches, must check
+                 * RPS_DEV_FLOW_TABLE_SIZE(mask + 1) doesn't overflow.
+                 */
+#if BITS_PER_LONG > 32
+                if (mask > (unsigned long)(u32)mask)
+                        return -EINVAL;
+#else
+                if (mask > (ULONG_MAX - RPS_DEV_FLOW_TABLE_SIZE(1))
+                                / sizeof(struct rps_dev_flow)) {
+                        /* Enforce a limit to prevent overflow */
+                        return -EINVAL;
+                }
+#endif
+                table = vmalloc(RPS_DEV_FLOW_TABLE_SIZE(mask + 1));
+                if (!table)
+                        return -ENOMEM;
+
+                table->mask = mask;
+                for (count = 0; count <= mask; count++)
+                        table->flows[count].cpu = RPS_NO_CPU;
+        } else
+                table = NULL;
+
+        spin_lock(&rps_dev_flow_lock);
+        old_table = rcu_dereference_protected(queue->rps_flow_table,
+                                              lockdep_is_held(&rps_dev_flow_lock));
+        rcu_assign_pointer(queue->rps_flow_table, table);
+        spin_unlock(&rps_dev_flow_lock);
+
+        if (old_table)
+                call_rcu(&old_table->rcu, rps_dev_flow_table_release);
+
+        return len;
+}
+
+static struct rx_queue_attribute rps_cpus_attribute =
+        __ATTR(rps_cpus, S_IRUGO | S_IWUSR, show_rps_map, store_rps_map);
+
+
+static struct rx_queue_attribute rps_dev_flow_table_cnt_attribute =
+        __ATTR(rps_flow_cnt, S_IRUGO | S_IWUSR,
+            show_rps_dev_flow_table_cnt, store_rps_dev_flow_table_cnt);
+#endif /* CONFIG_RPS */
+
+static struct attribute *rx_queue_default_attrs[] = {
+#ifdef CONFIG_RPS
+        &rps_cpus_attribute.attr,
+        &rps_dev_flow_table_cnt_attribute.attr,
+#endif
+        NULL
+};
+
+static void rx_queue_release(struct kobject *kobj)
+{
+        struct netdev_rx_queue *queue = to_rx_queue(kobj);
+#ifdef CONFIG_RPS
+        struct rps_map *map;
+        struct rps_dev_flow_table *flow_table;
+
+
+        map = rcu_dereference_protected(queue->rps_map, 1);
+        if (map) {
+                RCU_INIT_POINTER(queue->rps_map, NULL);
+                kfree_rcu(map, rcu);
+        }
+
+        flow_table = rcu_dereference_protected(queue->rps_flow_table, 1);
+        if (flow_table) {
+                RCU_INIT_POINTER(queue->rps_flow_table, NULL);
+                call_rcu(&flow_table->rcu, rps_dev_flow_table_release);
+        }
+#endif
+
+        memset(kobj, 0, sizeof(*kobj));
+        dev_put(queue->dev);
+}
+
+static const void *rx_queue_namespace(struct kobject *kobj)
+{
+        struct netdev_rx_queue *queue = to_rx_queue(kobj);
+        struct device *dev = &queue->dev->dev;
+        const void *ns = NULL;
+
+        if (dev->class && dev->class->ns_type)
+                ns = dev->class->namespace(dev);
+
+        return ns;
+}
+
+static struct kobj_type rx_queue_ktype = {
+        .sysfs_ops = &rx_queue_sysfs_ops,
+        .release = rx_queue_release,
+        .default_attrs = rx_queue_default_attrs,
+        .namespace = rx_queue_namespace
+};
+
+static int rx_queue_add_kobject(struct net_device *dev, int index)
+{
+        struct netdev_rx_queue *queue = dev->_rx + index;
+        struct kobject *kobj = &queue->kobj;
+        int error = 0;
+
+        kobj->kset = dev->queues_kset;
+        error = kobject_init_and_add(kobj, &rx_queue_ktype, NULL,
+            "rx-%u", index);
+        if (error)
+                goto exit;
+
+        if (dev->sysfs_rx_queue_group) {
+                error = sysfs_create_group(kobj, dev->sysfs_rx_queue_group);
+                if (error)
+                        goto exit;
+        }
+
+        kobject_uevent(kobj, KOBJ_ADD);
+        dev_hold(queue->dev);
+
+        return error;
+exit:
+        kobject_put(kobj);
+        return error;
+}
+#endif /* CONFIG_SYSFS */
+
+int
+net_rx_queue_update_kobjects(struct net_device *dev, int old_num, int new_num)
+{
+#ifdef CONFIG_SYSFS
+        int i;
+        int error = 0;
+
+#ifndef CONFIG_RPS
+        if (!dev->sysfs_rx_queue_group)
+                return 0;
+#endif
+        for (i = old_num; i < new_num; i++) {
+                error = rx_queue_add_kobject(dev, i);
+                if (error) {
+                        new_num = old_num;
+                        break;
+                }
+        }
+
+        while (--i >= new_num) {
+                if (dev->sysfs_rx_queue_group)
+                        sysfs_remove_group(&dev->_rx[i].kobj,
+                                           dev->sysfs_rx_queue_group);
+                kobject_put(&dev->_rx[i].kobj);
+        }
+
+        return error;
+#else
+        return 0;
+#endif
+}
+
+#ifdef CONFIG_SYSFS
+/*
+ * netdev_queue sysfs structures and functions.
+ */
+struct netdev_queue_attribute {
+        struct attribute attr;
+        ssize_t (*show)(struct netdev_queue *queue,
+            struct netdev_queue_attribute *attr, char *buf);
+        ssize_t (*store)(struct netdev_queue *queue,
+            struct netdev_queue_attribute *attr, const char *buf, size_t len);
+};
+#define to_netdev_queue_attr(_attr) container_of(_attr,         \
+    struct netdev_queue_attribute, attr)
+
+#define to_netdev_queue(obj) container_of(obj, struct netdev_queue, kobj)
+
+static ssize_t netdev_queue_attr_show(struct kobject *kobj,
+                                      struct attribute *attr, char *buf)
+{
+        struct netdev_queue_attribute *attribute = to_netdev_queue_attr(attr);
+        struct netdev_queue *queue = to_netdev_queue(kobj);
+
+        if (!attribute->show)
+                return -EIO;
+
+        return attribute->show(queue, attribute, buf);
+}
+
+static ssize_t netdev_queue_attr_store(struct kobject *kobj,
+                                       struct attribute *attr,
+                                       const char *buf, size_t count)
+{
+        struct netdev_queue_attribute *attribute = to_netdev_queue_attr(attr);
+        struct netdev_queue *queue = to_netdev_queue(kobj);
+
+        if (!attribute->store)
+                return -EIO;
+
+        return attribute->store(queue, attribute, buf, count);
+}
+
+static const struct sysfs_ops netdev_queue_sysfs_ops = {
+        .show = netdev_queue_attr_show,
+        .store = netdev_queue_attr_store,
+};
+
+static ssize_t show_trans_timeout(struct netdev_queue *queue,
+                                  struct netdev_queue_attribute *attribute,
+                                  char *buf)
+{
+        unsigned long trans_timeout;
+
+        spin_lock_irq(&queue->_xmit_lock);
+        trans_timeout = queue->trans_timeout;
+        spin_unlock_irq(&queue->_xmit_lock);
+
+        return sprintf(buf, "%lu", trans_timeout);
+}
+
+#ifdef CONFIG_XPS
+static inline unsigned int get_netdev_queue_index(struct netdev_queue *queue)
+{
+        struct net_device *dev = queue->dev;
+        int i;
+
+        for (i = 0; i < dev->num_tx_queues; i++)
+                if (queue == &dev->_tx[i])
+                        break;
+
+        BUG_ON(i >= dev->num_tx_queues);
+
+        return i;
+}
+
+ static ssize_t show_tx_maxrate(struct netdev_queue *queue,
+                                struct netdev_queue_attribute *attribute,
+                                char *buf)
+ {
+         return sprintf(buf, "%lu\n", queue->tx_maxrate);
+ }
+ 
+ static ssize_t set_tx_maxrate(struct netdev_queue *queue,
+                               struct netdev_queue_attribute *attribute,
+                               const char *buf, size_t len)
+ {
+         struct net_device *dev = queue->dev;
+         int err, index = get_netdev_queue_index(queue);
+         u32 rate = 0;
+ 
+         err = kstrtou32(buf, 10, &rate);
+         if (err < 0)
+                 return err;
+ 
+         if (!rtnl_trylock())
+                 return restart_syscall();
+ 
+         err = -EOPNOTSUPP;
+         if (dev->netdev_ops->ndo_set_tx_maxrate)
+                 err = dev->netdev_ops->ndo_set_tx_maxrate(dev, index, rate);
+ 
+         rtnl_unlock();
+         if (!err) {
+                 queue->tx_maxrate = rate;
+                 return len;
+         }
+         return err;
+ }
+ 
+ static struct netdev_queue_attribute queue_tx_maxrate =
+         __ATTR(tx_maxrate, S_IRUGO | S_IWUSR,
+                show_tx_maxrate, set_tx_maxrate);
+ #endif
+ 
+ static struct netdev_queue_attribute queue_trans_timeout =
+         __ATTR(tx_timeout, S_IRUGO, show_trans_timeout, NULL);
+ 
+ #ifdef CONFIG_BQL
+ /*
+  * Byte queue limits sysfs structures and functions.
+  */
+ static ssize_t bql_show(char *buf, unsigned int value)
+ {
+         return sprintf(buf, "%u\n", value);
+ }
+ 
+ static ssize_t bql_set(const char *buf, const size_t count,
+                        unsigned int *pvalue)
+ {
+         unsigned int value;
+         int err;
+ 
+         if (!strcmp(buf, "max") || !strcmp(buf, "max\n"))
+                 value = DQL_MAX_LIMIT;
+         else {
+                 err = kstrtouint(buf, 10, &value);
+                 if (err < 0)
+                         return err;
+                 if (value > DQL_MAX_LIMIT)
+                         return -EINVAL;
+         }
+ 
+         *pvalue = value;
+ 
+         return count;
+ }
+ 
+ static ssize_t bql_show_hold_time(struct netdev_queue *queue,
+                                   struct netdev_queue_attribute *attr,
+                                   char *buf)
+ {
+         struct dql *dql = &queue->dql;
+ 
+         return sprintf(buf, "%u\n", jiffies_to_msecs(dql->slack_hold_time));
+ }
+ 
+ static ssize_t bql_set_hold_time(struct netdev_queue *queue,
+                                  struct netdev_queue_attribute *attribute,
+                                  const char *buf, size_t len)
+ {
+         struct dql *dql = &queue->dql;
+         unsigned int value;
+         int err;
+ 
+         err = kstrtouint(buf, 10, &value);
+         if (err < 0)
+                 return err;
+ 
+         dql->slack_hold_time = msecs_to_jiffies(value);
+ 
+         return len;
+ }
+ 
+ static struct netdev_queue_attribute bql_hold_time_attribute =
+         __ATTR(hold_time, S_IRUGO | S_IWUSR, bql_show_hold_time,
+             bql_set_hold_time);
+ 
+ static ssize_t bql_show_inflight(struct netdev_queue *queue,
+                                  struct netdev_queue_attribute *attr,
+                                  char *buf)
+ {
+         struct dql *dql = &queue->dql;
+ 
+         return sprintf(buf, "%u\n", dql->num_queued - dql->num_completed);
+ }
+ 
+ static struct netdev_queue_attribute bql_inflight_attribute =
+         __ATTR(inflight, S_IRUGO, bql_show_inflight, NULL);
+ 
+ #define BQL_ATTR(NAME, FIELD)                                           \
+ static ssize_t bql_show_ ## NAME(struct netdev_queue *queue,            \
+                                  struct netdev_queue_attribute *attr,   \
+                                  char *buf)                             \
+ {                                                                       \
+         return bql_show(buf, queue->dql.FIELD);                         \
+ }                                                                       \
+                                                                         \
+ static ssize_t bql_set_ ## NAME(struct netdev_queue *queue,             \
+                                 struct netdev_queue_attribute *attr,    \
+                                 const char *buf, size_t len)            \
+ {                                                                       \
+         return bql_set(buf, len, &queue->dql.FIELD);                    \
+ }                                                                       \
+                                                                         \
+ static struct netdev_queue_attribute bql_ ## NAME ## _attribute =       \
+         __ATTR(NAME, S_IRUGO | S_IWUSR, bql_show_ ## NAME,              \
+             bql_set_ ## NAME);
+ 
+ BQL_ATTR(limit, limit)
+ BQL_ATTR(limit_max, max_limit)
+ BQL_ATTR(limit_min, min_limit)
+ 
+ static struct attribute *dql_attrs[] = {
+         &bql_limit_attribute.attr,
+         &bql_limit_max_attribute.attr,
+         &bql_limit_min_attribute.attr,
+         &bql_hold_time_attribute.attr,
+         &bql_inflight_attribute.attr,
+         NULL
+ };
+ 
+ static struct attribute_group dql_group = {
+         .name  = "byte_queue_limits",
+         .attrs  = dql_attrs,
+ };
+ #endif /* CONFIG_BQL */
+ 
+ #ifdef CONFIG_XPS
+ static ssize_t show_xps_map(struct netdev_queue *queue,
+                             struct netdev_queue_attribute *attribute, char *buf)
+ {
+         struct net_device *dev = queue->dev;
+         struct xps_dev_maps *dev_maps;
+         cpumask_var_t mask;
+         unsigned long index;
+         int i, len;
+ 
+         if (!zalloc_cpumask_var(&mask, GFP_KERNEL))
+                 return -ENOMEM;
+ 
+         index = get_netdev_queue_index(queue);
+ 
+         rcu_read_lock();
+         dev_maps = rcu_dereference(dev->xps_maps);
+         if (dev_maps) {
+                 for_each_possible_cpu(i) {
+                         struct xps_map *map =
+                             rcu_dereference(dev_maps->cpu_map[i]);
+                         if (map) {
+                                 int j;
+                                 for (j = 0; j < map->len; j++) {
+                                         if (map->queues[j] == index) {
+                                                 cpumask_set_cpu(i, mask);
+                                                 break;
+                                         }
+                                 }
+                         }
+                 }
+         }
+         rcu_read_unlock();
+ 
+         len = snprintf(buf, PAGE_SIZE, "%*pb\n", cpumask_pr_args(mask));
+         free_cpumask_var(mask);
+         return len < PAGE_SIZE ? len : -EINVAL;
+ }
+ 
+ static ssize_t store_xps_map(struct netdev_queue *queue,
+                       struct netdev_queue_attribute *attribute,
+                       const char *buf, size_t len)
+ {
+         struct net_device *dev = queue->dev;
+         unsigned long index;
+         cpumask_var_t mask;
+         int err;
+ 
+         if (!capable(CAP_NET_ADMIN))
+                 return -EPERM;
+ 
+         if (!alloc_cpumask_var(&mask, GFP_KERNEL))
+                 return -ENOMEM;
+ 
+         index = get_netdev_queue_index(queue);
+ 
+         err = bitmap_parse(buf, len, cpumask_bits(mask), nr_cpumask_bits);
+         if (err) {
+                 free_cpumask_var(mask);
+                 return err;
+         }
+ 
+         err = netif_set_xps_queue(dev, mask, index);
+ 
+         free_cpumask_var(mask);
+ 
+         return err ? : len;
+ }
+ 
+ static struct netdev_queue_attribute xps_cpus_attribute =
+     __ATTR(xps_cpus, S_IRUGO | S_IWUSR, show_xps_map, store_xps_map);
+ #endif /* CONFIG_XPS */
+ 
+ static struct attribute *netdev_queue_default_attrs[] = {
+         &queue_trans_timeout.attr,
+ #ifdef CONFIG_XPS
+         &xps_cpus_attribute.attr,
+         &queue_tx_maxrate.attr,
+ #endif
+         NULL
+ };
+ 
+ static void netdev_queue_release(struct kobject *kobj)
+ {
+         struct netdev_queue *queue = to_netdev_queue(kobj);
+ 
+         memset(kobj, 0, sizeof(*kobj));
+         dev_put(queue->dev);
+ }
+ 
+ static const void *netdev_queue_namespace(struct kobject *kobj)
+ {
+         struct netdev_queue *queue = to_netdev_queue(kobj);
+         struct device *dev = &queue->dev->dev;
+         const void *ns = NULL;
+ 
+         if (dev->class && dev->class->ns_type)
+                 ns = dev->class->namespace(dev);
+ 
+         return ns;
+ }
+ 
+ static struct kobj_type netdev_queue_ktype = {
+         .sysfs_ops = &netdev_queue_sysfs_ops,
+         .release = netdev_queue_release,
+         .default_attrs = netdev_queue_default_attrs,
+         .namespace = netdev_queue_namespace,
+ };
+ 
+ static int netdev_queue_add_kobject(struct net_device *dev, int index)
+ {
+         struct netdev_queue *queue = dev->_tx + index;
+         struct kobject *kobj = &queue->kobj;
+         int error = 0;
+ 
+         kobj->kset = dev->queues_kset;
+         error = kobject_init_and_add(kobj, &netdev_queue_ktype, NULL,
+             "tx-%u", index);
+         if (error)
+                 goto exit;
+ 
+ #ifdef CONFIG_BQL
+         error = sysfs_create_group(kobj, &dql_group);
+         if (error)
+                 goto exit;
+ #endif
+ 
+         kobject_uevent(kobj, KOBJ_ADD);
+         dev_hold(queue->dev);
+ 
+         return 0;
+ exit:
+         kobject_put(kobj);
+         return error;
+ }
+ #endif /* CONFIG_SYSFS */
+ 
+ int
+ netdev_queue_update_kobjects(struct net_device *dev, int old_num, int new_num)
+ {
+ #ifdef CONFIG_SYSFS
+         int i;
+         int error = 0;
+ 
+         for (i = old_num; i < new_num; i++) {
+                 error = netdev_queue_add_kobject(dev, i);
+                 if (error) {
+                         new_num = old_num;
+                         break;
+                 }
+         }
+ 
+         while (--i >= new_num) {
+                 struct netdev_queue *queue = dev->_tx + i;
+ 
+ #ifdef CONFIG_BQL
+                 sysfs_remove_group(&queue->kobj, &dql_group);
+ #endif
+                 kobject_put(&queue->kobj);
+         }
+ 
+         return error;
+ #else
+         return 0;
+ #endif /* CONFIG_SYSFS */
+ }
+ 
+ static int register_queue_kobjects(struct net_device *dev)
+ {
+         int error = 0, txq = 0, rxq = 0, real_rx = 0, real_tx = 0;
+ 
+ #ifdef CONFIG_SYSFS
+         dev->queues_kset = kset_create_and_add("queues",
+             NULL, &dev->dev.kobj);
+         if (!dev->queues_kset)
+                 return -ENOMEM;
+         real_rx = dev->real_num_rx_queues;
+ #endif
+         real_tx = dev->real_num_tx_queues;
+ 
+         error = net_rx_queue_update_kobjects(dev, 0, real_rx);
+         if (error)
+                 goto error;
+         rxq = real_rx;
+ 
+         error = netdev_queue_update_kobjects(dev, 0, real_tx);
+         if (error)
+                 goto error;
+         txq = real_tx;
+ 
+         return 0;
+ 
+ error:
+         netdev_queue_update_kobjects(dev, txq, 0);
+         net_rx_queue_update_kobjects(dev, rxq, 0);
+         return error;
+ }
+ 
+ static void remove_queue_kobjects(struct net_device *dev)
+ {
+         int real_rx = 0, real_tx = 0;
+ 
+ #ifdef CONFIG_SYSFS
+         real_rx = dev->real_num_rx_queues;
+ #endif
+         real_tx = dev->real_num_tx_queues;
+ 
+         net_rx_queue_update_kobjects(dev, real_rx, 0);
+         netdev_queue_update_kobjects(dev, real_tx, 0);
+ #ifdef CONFIG_SYSFS
+         kset_unregister(dev->queues_kset);
+ #endif
+ }
+ 
+ static bool net_current_may_mount(void)
+ {
+         struct net *net = current->nsproxy->net_ns;
+ 
+         return ns_capable(net->user_ns, CAP_SYS_ADMIN);
+ }
+ 
+ static void *net_grab_current_ns(void)
+ {
+         struct net *ns = current->nsproxy->net_ns;
+ #ifdef CONFIG_NET_NS
+         if (ns)
+                 atomic_inc(&ns->passive);
+ #endif
+         return ns;
+ }
+ 
+ static const void *net_initial_ns(void)
+ {
+         return &init_net;
+ }
+ 
+ static const void *net_netlink_ns(struct sock *sk)
+ {
+         return sock_net(sk);
+ }
+ 
+ struct kobj_ns_type_operations net_ns_type_operations = {
+         .type = KOBJ_NS_TYPE_NET,
+         .current_may_mount = net_current_may_mount,
+         .grab_current_ns = net_grab_current_ns,
+         .netlink_ns = net_netlink_ns,
+         .initial_ns = net_initial_ns,
+         .drop_ns = net_drop_ns,
+ };
+ EXPORT_SYMBOL_GPL(net_ns_type_operations);
+ 
+ static int netdev_uevent(struct device *d, struct kobj_uevent_env *env)
+ {
+         struct net_device *dev = to_net_dev(d);
+         int retval;
+ 
+         /* pass interface to uevent. */
+         retval = add_uevent_var(env, "INTERFACE=%s", dev->name);
+         if (retval)
+                 goto exit;
+ 
+         /* pass ifindex to uevent.
+          * ifindex is useful as it won't change (interface name may change)
+          * and is what RtNetlink uses natively. */
+         retval = add_uevent_var(env, "IFINDEX=%d", dev->ifindex);
+ 
+ exit:
+         return retval;
+ }
+ 
+ /*
+  *      netdev_release -- destroy and free a dead device.
+  *      Called when last reference to device kobject is gone.
+  */
+ static void netdev_release(struct device *d)
+ {
+         struct net_device *dev = to_net_dev(d);
+ 
+         BUG_ON(dev->reg_state != NETREG_RELEASED);
+ 
+         kfree(dev->ifalias);
+         netdev_freemem(dev);
+ }
+ 
+ static const void *net_namespace(struct device *d)
+ {
+         struct net_device *dev;
+         dev = container_of(d, struct net_device, dev);
+         return dev_net(dev);
+ }
+ 
+ static struct class net_class = {
+         .name = "net",
+         .dev_release = netdev_release,
+         .dev_groups = net_class_groups,
+         .dev_uevent = netdev_uevent,
+         .ns_type = &net_ns_type_operations,
+         .namespace = net_namespace,
+ };
+ 
+ #ifdef CONFIG_OF_NET
+ static int of_dev_node_match(struct device *dev, const void *data)
+ {
+         int ret = 0;
+ 
+         if (dev->parent)
+                 ret = dev->parent->of_node == data;
+ 
+         return ret == 0 ? dev->of_node == data : ret;
+ }
+ 
+ struct net_device *of_find_net_device_by_node(struct device_node *np)
+ {
+         struct device *dev;
+ 
+         dev = class_find_device(&net_class, NULL, np, of_dev_node_match);
+         if (!dev)
+                 return NULL;
+ 
+         return to_net_dev(dev);
+ }
+ EXPORT_SYMBOL(of_find_net_device_by_node);
+ #endif
+ 
+ /* Delete sysfs entries but hold kobject reference until after all
+  * netdev references are gone.
+  */
+ void netdev_unregister_kobject(struct net_device *ndev)
+ {
+         struct device *dev = &(ndev->dev);
+ 
+         kobject_get(&dev->kobj);
+ 
+         remove_queue_kobjects(ndev);
+ 
+         pm_runtime_set_memalloc_noio(dev, false);
+ 
+         device_del(dev);
+ }
+ 
+ /* Create sysfs entries for network device. */
+ int netdev_register_kobject(struct net_device *ndev)
+ {
+         struct device *dev = &(ndev->dev);
+         const struct attribute_group **groups = ndev->sysfs_groups;
+         int error = 0;
+ 
+         device_initialize(dev);
+         dev->class = &net_class;
+         dev->platform_data = ndev;
+         dev->groups = groups;
+ 
+         dev_set_name(dev, "%s", ndev->name);
+ 
+ #ifdef CONFIG_SYSFS
+         /* Allow for a device specific group */
+         if (*groups)
+                 groups++;
+ 
+         *groups++ = &netstat_group;
+ 
+ #if IS_ENABLED(CONFIG_WIRELESS_EXT) || IS_ENABLED(CONFIG_CFG80211)
+         if (ndev->ieee80211_ptr)
+                 *groups++ = &wireless_group;
+ #if IS_ENABLED(CONFIG_WIRELESS_EXT)
+         else if (ndev->wireless_handlers)
+                 *groups++ = &wireless_group;
+ #endif
+ #endif
+ #endif /* CONFIG_SYSFS */
+ 
+         error = device_add(dev);
+         if (error)
+                 return error;
+ 
+         error = register_queue_kobjects(ndev);
+         if (error) {
+                 device_del(dev);
+                 return error;
+         }
+ 
+         pm_runtime_set_memalloc_noio(dev, true);
+ 
+         return error;
+ }
+ 
+ int netdev_class_create_file_ns(struct class_attribute *class_attr,
+                                 const void *ns)
+ {
+         return class_create_file_ns(&net_class, class_attr, ns);
+ }
+ EXPORT_SYMBOL(netdev_class_create_file_ns);
+ 
+ void netdev_class_remove_file_ns(struct class_attribute *class_attr,
+                                  const void *ns)
+ {
+         class_remove_file_ns(&net_class, class_attr, ns);
+ }
+ EXPORT_SYMBOL(netdev_class_remove_file_ns);
+ 
+ int __init netdev_kobject_init(void)
+ {
+         kobj_ns_type_register(&net_ns_type_operations);
+         return class_register(&net_class);
+ }
+ 
+```
 
 ```
 
@@ -201,6 +1784,11 @@ enum {
 ```
 
 
+
+
+
+
+```
 /*
  *              Linux/include/linux/netdevice.h
  *
@@ -4390,6 +5978,10 @@ static inline void rps_unlock(struct softnet_data *sd)
 }
 
 /* Device list insertion */
+//将 dev->dev_list 增加到 dev->net->dev_base_head 链表中
+//将 dev->nam_hlist 增加到 &dev->net->dev_name_head[hash_32(full_name_hash(dev->name, strnlen(dev->name, IFNAMSIZ)), NETDEV_HASHBITS)]
+//将 dev->index_hlist 增加到 dev->net->dev_index_head[dev->ifindex & (NETDEV_HASHENTRIES - 1)] 中
+//将 dev 加入如上散列表中, 当网络子系统高层的代码需要发送数据包的时候, 能通过这几个散列表找到特定的网络设备
 static void list_netdevice(struct net_device *dev)
 {
         struct net *net = dev_net(dev);
@@ -6847,6 +8439,8 @@ static int __dev_alloc_name(struct net *net, const char *name, char *buf)
                  }
  
                  skb = next;
+                //驱动通过 netif_xmit_stopped(txq)
+                //通知高层停止发送数据给驱动
                  if (netif_xmit_stopped(txq) && skb) {
                          rc = NETDEV_TX_BUSY;
                          break;
@@ -7165,6 +8759,8 @@ static int __dev_alloc_name(struct net *net, const char *name, char *buf)
  
                          HARD_TX_LOCK(dev, txq, cpu);
  
+                         //驱动通过 netif_xmit_stopped(txq)
+                         //通知高层停止发送数据给驱动
                          if (!netif_xmit_stopped(txq)) {
                                  __this_cpu_inc(xmit_recursion);
                                  skb = dev_hard_start_xmit(skb, dev, txq, &rc);
@@ -7518,6 +9114,7 @@ static int __dev_alloc_name(struct net *net, const char *name, char *buf)
          if (qlen <= netdev_max_backlog && !skb_flow_limit(skb, qlen)) {
                  if (qlen) {
  enqueue:
+                         //加入 sd->input_pkt_queue 中 sd 为 CPU ID 为 cpu 的 softnet_data
                          __skb_queue_tail(&sd->input_pkt_queue, skb);
                          input_queue_tail_incr_save(sd, qtail);
                          rps_unlock(sd);
@@ -7572,6 +9169,7 @@ static int __dev_alloc_name(struct net *net, const char *name, char *buf)
  #endif
          {
                  unsigned int qtail;
+                 //将包放在中断所属的 CPU 的 softnet_data->input_pkt_queue 队列中
                  ret = enqueue_to_backlog(skb, get_cpu(), &qtail);
                  put_cpu();
          }
@@ -10501,6 +12099,11 @@ static int __dev_alloc_name(struct net *net, const char *name, char *buf)
   *      BUGS:
   *      The locking appears insufficient to guarantee two parallel registers
   *      will not get the same name.
+  *
+  *      当网络子系统中高层要发送一个数据包时, 通过查找路由表得到接口信息, 比如
+  *      eth0, 然后再到设备列表中查找对应的设备. 所以当一个 NIC 设备向系统注册后
+  *      它将纳入子系统的高层代码之中, 其携带的设备方法随时可能被高层代码所征用
+  *
   */
  
  int register_netdevice(struct net_device *dev)
@@ -10577,6 +12180,8 @@ static int __dev_alloc_name(struct net *net, const char *name, char *buf)
          if (ret)
                  goto err_uninit;
  
+         //通过设备驱动模型向系统中添加 dev, 将 dev 变成一个内核对象,
+         //继而linux 设备模型来操控当前的网络设备
          ret = netdev_register_kobject(dev);
          if (ret)
                  goto err_uninit;
@@ -10593,8 +12198,10 @@ static int __dev_alloc_name(struct net *net, const char *name, char *buf)
  
          linkwatch_init_dev(dev);
  
+         //
          dev_init_scheduler(dev);
          dev_hold(dev);
+         //将 dev 加入几个特定命名空间的几个散列表中, 当网络子系统高层的代码需要发送数据包的时候, 能通过这几个散列表找到特定的网络设备
          list_netdevice(dev);
          add_device_randomness(dev->dev_addr, dev->addr_len);
  
@@ -10606,6 +12213,7 @@ static int __dev_alloc_name(struct net *net, const char *name, char *buf)
                  memcpy(dev->perm_addr, dev->dev_addr, dev->addr_len);
  
          /* Notify protocols, that a new device appeared. */
+         //经过此处调用, dev->reg_state 成为了 NETREG_REGISTERED
          ret = call_netdevice_notifiers(NETDEV_REGISTER, dev);
          ret = notifier_to_errno(ret);
          if (ret) {
@@ -12601,5 +14209,4009 @@ static int __init eth_offload_init(void)
 }
 
 fs_initcall(eth_offload_init);
+
+```
+
+```
+/* 
+ * drivers/base/core.c - core driver model code (device registration, etc)
+ *
+ * Copyright (c) 2002-3 Patrick Mochel
+ * Copyright (c) 2002-3 Open Source Development Labs
+ * Copyright (c) 2006 Greg Kroah-Hartman <gregkh@suse.de>
+ * Copyright (c) 2006 Novell, Inc.
+ *
+ * This file is released under the GPLv2
+ *
+ */
+
+#include <linux/device.h>
+#include <linux/err.h>
+#include <linux/fwnode.h>
+#include <linux/init.h>
+#include <linux/module.h>
+#include <linux/slab.h>
+#include <linux/string.h>
+#include <linux/kdev_t.h>
+#include <linux/notifier.h>
+#include <linux/of.h>
+#include <linux/of_device.h>
+#include <linux/genhd.h>
+#include <linux/kallsyms.h>
+#include <linux/mutex.h>
+#include <linux/pm_runtime.h>
+#include <linux/netdevice.h>
+#include <linux/sysfs.h>
+
+#include "base.h"
+#include "power/power.h"
+
+#ifdef CONFIG_SYSFS_DEPRECATED
+#ifdef CONFIG_SYSFS_DEPRECATED_V2
+long sysfs_deprecated = 1;
+#else
+long sysfs_deprecated = 0;
+#endif
+static int __init sysfs_deprecated_setup(char *arg)
+{
+        return kstrtol(arg, 10, &sysfs_deprecated);
+}
+early_param("sysfs.deprecated", sysfs_deprecated_setup);
+#endif
+
+int (*platform_notify)(struct device *dev) = NULL;
+int (*platform_notify_remove)(struct device *dev) = NULL;
+static struct kobject *dev_kobj;
+struct kobject *sysfs_dev_char_kobj;
+struct kobject *sysfs_dev_block_kobj;
+
+static DEFINE_MUTEX(device_hotplug_lock);
+
+void lock_device_hotplug(void)
+{
+        mutex_lock(&device_hotplug_lock);
+}
+
+void unlock_device_hotplug(void)
+{
+        mutex_unlock(&device_hotplug_lock);
+}
+
+int lock_device_hotplug_sysfs(void)
+{
+        if (mutex_trylock(&device_hotplug_lock))
+                return 0;
+
+        /* Avoid busy looping (5 ms of sleep should do). */
+        msleep(5);
+        return restart_syscall();
+}
+
+#ifdef CONFIG_BLOCK
+static inline int device_is_not_partition(struct device *dev)
+{
+        return !(dev->type == &part_type);
+}
+#else
+static inline int device_is_not_partition(struct device *dev)
+{
+        return 1;
+}
+#endif
+
+/**
+ * dev_driver_string - Return a device's driver name, if at all possible
+ * @dev: struct device to get the name of
+ *
+ * Will return the device's driver's name if it is bound to a device.  If
+ * the device is not bound to a driver, it will return the name of the bus
+ * it is attached to.  If it is not attached to a bus either, an empty
+ * string will be returned.
+ */
+const char *dev_driver_string(const struct device *dev)
+{
+        struct device_driver *drv;
+
+        /* dev->driver can change to NULL underneath us because of unbinding,
+         * so be careful about accessing it.  dev->bus and dev->class should
+         * never change once they are set, so they don't need special care.
+         */
+        drv = ACCESS_ONCE(dev->driver);
+        return drv ? drv->name :
+                        (dev->bus ? dev->bus->name :
+                        (dev->class ? dev->class->name : ""));
+}
+EXPORT_SYMBOL(dev_driver_string);
+
+#define to_dev_attr(_attr) container_of(_attr, struct device_attribute, attr)
+
+static ssize_t dev_attr_show(struct kobject *kobj, struct attribute *attr,
+                             char *buf)
+{
+        struct device_attribute *dev_attr = to_dev_attr(attr);
+        struct device *dev = kobj_to_dev(kobj);
+        ssize_t ret = -EIO;
+
+        if (dev_attr->show)
+                ret = dev_attr->show(dev, dev_attr, buf);
+        if (ret >= (ssize_t)PAGE_SIZE) {
+                print_symbol("dev_attr_show: %s returned bad count\n",
+                                (unsigned long)dev_attr->show);
+        }
+        return ret;
+}
+
+static ssize_t dev_attr_store(struct kobject *kobj, struct attribute *attr,
+                              const char *buf, size_t count)
+{
+        struct device_attribute *dev_attr = to_dev_attr(attr);
+        struct device *dev = kobj_to_dev(kobj);
+        ssize_t ret = -EIO;
+
+        if (dev_attr->store)
+                ret = dev_attr->store(dev, dev_attr, buf, count);
+        return ret;
+}
+
+static const struct sysfs_ops dev_sysfs_ops = {
+        .show   = dev_attr_show,
+        .store  = dev_attr_store,
+};
+
+#define to_ext_attr(x) container_of(x, struct dev_ext_attribute, attr)
+
+ssize_t device_store_ulong(struct device *dev,
+                           struct device_attribute *attr,
+                           const char *buf, size_t size)
+{
+        struct dev_ext_attribute *ea = to_ext_attr(attr);
+        char *end;
+        unsigned long new = simple_strtoul(buf, &end, 0);
+        if (end == buf)
+                return -EINVAL;
+        *(unsigned long *)(ea->var) = new;
+        /* Always return full write size even if we didn't consume all */
+        return size;
+}
+EXPORT_SYMBOL_GPL(device_store_ulong);
+
+ssize_t device_show_ulong(struct device *dev,
+                          struct device_attribute *attr,
+                          char *buf)
+{
+        struct dev_ext_attribute *ea = to_ext_attr(attr);
+        return snprintf(buf, PAGE_SIZE, "%lx\n", *(unsigned long *)(ea->var));
+}
+EXPORT_SYMBOL_GPL(device_show_ulong);
+
+ssize_t device_store_int(struct device *dev,
+                         struct device_attribute *attr,
+                         const char *buf, size_t size)
+{
+        struct dev_ext_attribute *ea = to_ext_attr(attr);
+        char *end;
+        long new = simple_strtol(buf, &end, 0);
+        if (end == buf || new > INT_MAX || new < INT_MIN)
+                return -EINVAL;
+        *(int *)(ea->var) = new;
+        /* Always return full write size even if we didn't consume all */
+        return size;
+}
+EXPORT_SYMBOL_GPL(device_store_int);
+
+ssize_t device_show_int(struct device *dev,
+                        struct device_attribute *attr,
+                        char *buf)
+{
+        struct dev_ext_attribute *ea = to_ext_attr(attr);
+
+        return snprintf(buf, PAGE_SIZE, "%d\n", *(int *)(ea->var));
+}
+EXPORT_SYMBOL_GPL(device_show_int);
+
+ssize_t device_store_bool(struct device *dev, struct device_attribute *attr,
+                          const char *buf, size_t size)
+{
+        struct dev_ext_attribute *ea = to_ext_attr(attr);
+
+        if (strtobool(buf, ea->var) < 0)
+                return -EINVAL;
+
+        return size;
+}
+EXPORT_SYMBOL_GPL(device_store_bool);
+
+ssize_t device_show_bool(struct device *dev, struct device_attribute *attr,
+                         char *buf)
+{
+        struct dev_ext_attribute *ea = to_ext_attr(attr);
+
+        return snprintf(buf, PAGE_SIZE, "%d\n", *(bool *)(ea->var));
+}
+EXPORT_SYMBOL_GPL(device_show_bool);
+
+/**
+ * device_release - free device structure.
+ * @kobj: device's kobject.
+ *
+ * This is called once the reference count for the object
+ * reaches 0. We forward the call to the device's release
+ * method, which should handle actually freeing the structure.
+ */
+static void device_release(struct kobject *kobj)
+{
+        struct device *dev = kobj_to_dev(kobj);
+        struct device_private *p = dev->p;
+
+        /*
+         * Some platform devices are driven without driver attached
+         * and managed resources may have been acquired.  Make sure
+         * all resources are released.
+         *
+         * Drivers still can add resources into device after device
+         * is deleted but alive, so release devres here to avoid
+         * possible memory leak.
+         */
+        devres_release_all(dev);
+
+        if (dev->release)
+                dev->release(dev);
+        else if (dev->type && dev->type->release)
+                dev->type->release(dev);
+        else if (dev->class && dev->class->dev_release)
+                dev->class->dev_release(dev);
+        else
+                WARN(1, KERN_ERR "Device '%s' does not have a release() "
+                        "function, it is broken and must be fixed.\n",
+                        dev_name(dev));
+        kfree(p);
+}
+
+static const void *device_namespace(struct kobject *kobj)
+{
+        struct device *dev = kobj_to_dev(kobj);
+        const void *ns = NULL;
+
+        if (dev->class && dev->class->ns_type)
+                ns = dev->class->namespace(dev);
+
+        return ns;
+}
+
+static struct kobj_type device_ktype = {
+        .release        = device_release,
+        .sysfs_ops      = &dev_sysfs_ops,
+        .namespace      = device_namespace,
+};
+
+
+static int dev_uevent_filter(struct kset *kset, struct kobject *kobj)
+{
+        struct kobj_type *ktype = get_ktype(kobj);
+
+        if (ktype == &device_ktype) {
+                struct device *dev = kobj_to_dev(kobj);
+                if (dev->bus)
+                        return 1;
+                if (dev->class)
+                        return 1;
+        }
+        return 0;
+}
+
+static const char *dev_uevent_name(struct kset *kset, struct kobject *kobj)
+{
+        struct device *dev = kobj_to_dev(kobj);
+
+        if (dev->bus)
+                return dev->bus->name;
+        if (dev->class)
+                return dev->class->name;
+        return NULL;
+}
+
+static int dev_uevent(struct kset *kset, struct kobject *kobj,
+                      struct kobj_uevent_env *env)
+{
+        struct device *dev = kobj_to_dev(kobj);
+        int retval = 0;
+
+        /* add device node properties if present */
+        if (MAJOR(dev->devt)) {
+                const char *tmp;
+                const char *name;
+                umode_t mode = 0;
+                kuid_t uid = GLOBAL_ROOT_UID;
+                kgid_t gid = GLOBAL_ROOT_GID;
+
+                add_uevent_var(env, "MAJOR=%u", MAJOR(dev->devt));
+                add_uevent_var(env, "MINOR=%u", MINOR(dev->devt));
+                name = device_get_devnode(dev, &mode, &uid, &gid, &tmp);
+                if (name) {
+                        add_uevent_var(env, "DEVNAME=%s", name);
+                        if (mode)
+                                add_uevent_var(env, "DEVMODE=%#o", mode & 0777);
+                        if (!uid_eq(uid, GLOBAL_ROOT_UID))
+                                add_uevent_var(env, "DEVUID=%u", from_kuid(&init_user_ns, uid));
+                        if (!gid_eq(gid, GLOBAL_ROOT_GID))
+                                add_uevent_var(env, "DEVGID=%u", from_kgid(&init_user_ns, gid));
+                        kfree(tmp);
+                }
+        }
+
+        if (dev->type && dev->type->name)
+                add_uevent_var(env, "DEVTYPE=%s", dev->type->name);
+
+        if (dev->driver)
+                add_uevent_var(env, "DRIVER=%s", dev->driver->name);
+
+        /* Add common DT information about the device */
+        of_device_uevent(dev, env);
+
+        /* have the bus specific function add its stuff */
+        if (dev->bus && dev->bus->uevent) {
+                retval = dev->bus->uevent(dev, env);
+                if (retval)
+                        pr_debug("device: '%s': %s: bus uevent() returned %d\n",
+                                 dev_name(dev), __func__, retval);
+        }
+
+        /* have the class specific function add its stuff */
+        if (dev->class && dev->class->dev_uevent) {
+                retval = dev->class->dev_uevent(dev, env);
+                if (retval)
+                        pr_debug("device: '%s': %s: class uevent() "
+                                 "returned %d\n", dev_name(dev),
+                                 __func__, retval);
+        }
+
+        /* have the device type specific function add its stuff */
+        if (dev->type && dev->type->uevent) {
+                retval = dev->type->uevent(dev, env);
+                if (retval)
+                        pr_debug("device: '%s': %s: dev_type uevent() "
+                                 "returned %d\n", dev_name(dev),
+                                 __func__, retval);
+        }
+
+        return retval;
+}
+
+static const struct kset_uevent_ops device_uevent_ops = {
+        .filter =       dev_uevent_filter,
+        .name =         dev_uevent_name,
+        .uevent =       dev_uevent,
+};
+
+static ssize_t uevent_show(struct device *dev, struct device_attribute *attr,
+                           char *buf)
+{
+        struct kobject *top_kobj;
+        struct kset *kset;
+        struct kobj_uevent_env *env = NULL;
+        int i;
+        size_t count = 0;
+        int retval;
+
+        /* search the kset, the device belongs to */
+        top_kobj = &dev->kobj;
+        while (!top_kobj->kset && top_kobj->parent)
+                top_kobj = top_kobj->parent;
+        if (!top_kobj->kset)
+                goto out;
+
+        kset = top_kobj->kset;
+        if (!kset->uevent_ops || !kset->uevent_ops->uevent)
+                goto out;
+
+        /* respect filter */
+        if (kset->uevent_ops && kset->uevent_ops->filter)
+                if (!kset->uevent_ops->filter(kset, &dev->kobj))
+                        goto out;
+
+        env = kzalloc(sizeof(struct kobj_uevent_env), GFP_KERNEL);
+        if (!env)
+                return -ENOMEM;
+
+        /* let the kset specific function add its keys */
+        retval = kset->uevent_ops->uevent(kset, &dev->kobj, env);
+        if (retval)
+                goto out;
+
+        /* copy keys to file */
+        for (i = 0; i < env->envp_idx; i++)
+                count += sprintf(&buf[count], "%s\n", env->envp[i]);
+out:
+        kfree(env);
+        return count;
+}
+
+static ssize_t uevent_store(struct device *dev, struct device_attribute *attr,
+                            const char *buf, size_t count)
+{
+        enum kobject_action action;
+
+        if (kobject_action_type(buf, count, &action) == 0)
+                kobject_uevent(&dev->kobj, action);
+        else
+                dev_err(dev, "uevent: unknown action-string\n");
+        return count;
+}
+static DEVICE_ATTR_RW(uevent);
+
+static ssize_t online_show(struct device *dev, struct device_attribute *attr,
+                           char *buf)
+{
+        bool val;
+
+        device_lock(dev);
+        val = !dev->offline;
+        device_unlock(dev);
+        return sprintf(buf, "%u\n", val);
+}
+
+static ssize_t online_store(struct device *dev, struct device_attribute *attr,
+                            const char *buf, size_t count)
+{
+        bool val;
+        int ret;
+
+        ret = strtobool(buf, &val);
+        if (ret < 0)
+                return ret;
+
+        ret = lock_device_hotplug_sysfs();
+        if (ret)
+                return ret;
+
+        ret = val ? device_online(dev) : device_offline(dev);
+        unlock_device_hotplug();
+        return ret < 0 ? ret : count;
+}
+static DEVICE_ATTR_RW(online);
+
+int device_add_groups(struct device *dev, const struct attribute_group **groups)
+{
+        return sysfs_create_groups(&dev->kobj, groups);
+}
+
+void device_remove_groups(struct device *dev,
+                          const struct attribute_group **groups)
+{
+        sysfs_remove_groups(&dev->kobj, groups);
+}
+
+static int device_add_attrs(struct device *dev)
+{
+        struct class *class = dev->class;
+        const struct device_type *type = dev->type;
+        int error;
+
+        if (class) {
+                error = device_add_groups(dev, class->dev_groups);
+                if (error)
+                        return error;
+        }
+
+        if (type) {
+                error = device_add_groups(dev, type->groups);
+                if (error)
+                        goto err_remove_class_groups;
+        }
+
+        error = device_add_groups(dev, dev->groups);
+        if (error)
+                goto err_remove_type_groups;
+
+        if (device_supports_offline(dev) && !dev->offline_disabled) {
+                error = device_create_file(dev, &dev_attr_online);
+                if (error)
+                        goto err_remove_dev_groups;
+        }
+
+        return 0;
+
+ err_remove_dev_groups:
+        device_remove_groups(dev, dev->groups);
+ err_remove_type_groups:
+        if (type)
+                device_remove_groups(dev, type->groups);
+ err_remove_class_groups:
+        if (class)
+                device_remove_groups(dev, class->dev_groups);
+
+        return error;
+}
+
+static void device_remove_attrs(struct device *dev)
+{
+        struct class *class = dev->class;
+        const struct device_type *type = dev->type;
+
+        device_remove_file(dev, &dev_attr_online);
+        device_remove_groups(dev, dev->groups);
+
+        if (type)
+                device_remove_groups(dev, type->groups);
+
+        if (class)
+                device_remove_groups(dev, class->dev_groups);
+}
+
+static ssize_t dev_show(struct device *dev, struct device_attribute *attr,
+                        char *buf)
+{
+        return print_dev_t(buf, dev->devt);
+}
+static DEVICE_ATTR_RO(dev);
+
+/* /sys/devices/ */
+struct kset *devices_kset;
+
+/**
+ * device_create_file - create sysfs attribute file for device.
+ * @dev: device.
+ * @attr: device attribute descriptor.
+ */
+int device_create_file(struct device *dev,
+                       const struct device_attribute *attr)
+{
+        int error = 0;
+
+        if (dev) {
+                WARN(((attr->attr.mode & S_IWUGO) && !attr->store),
+                        "Attribute %s: write permission without 'store'\n",
+                        attr->attr.name);
+                WARN(((attr->attr.mode & S_IRUGO) && !attr->show),
+                        "Attribute %s: read permission without 'show'\n",
+                        attr->attr.name);
+                error = sysfs_create_file(&dev->kobj, &attr->attr);
+        }
+
+        return error;
+}
+EXPORT_SYMBOL_GPL(device_create_file);
+
+/**
+ * device_remove_file - remove sysfs attribute file.
+ * @dev: device.
+ * @attr: device attribute descriptor.
+ */
+void device_remove_file(struct device *dev,
+                        const struct device_attribute *attr)
+{
+        if (dev)
+                sysfs_remove_file(&dev->kobj, &attr->attr);
+}
+EXPORT_SYMBOL_GPL(device_remove_file);
+
+/**
+ * device_remove_file_self - remove sysfs attribute file from its own method.
+ * @dev: device.
+ * @attr: device attribute descriptor.
+ *
+ * See kernfs_remove_self() for details.
+ */
+bool device_remove_file_self(struct device *dev,
+                             const struct device_attribute *attr)
+{
+        if (dev)
+                return sysfs_remove_file_self(&dev->kobj, &attr->attr);
+        else
+                return false;
+}
+EXPORT_SYMBOL_GPL(device_remove_file_self);
+
+/**
+ * device_create_bin_file - create sysfs binary attribute file for device.
+ * @dev: device.
+ * @attr: device binary attribute descriptor.
+ */
+int device_create_bin_file(struct device *dev,
+                           const struct bin_attribute *attr)
+{
+        int error = -EINVAL;
+        if (dev)
+                error = sysfs_create_bin_file(&dev->kobj, attr);
+        return error;
+}
+EXPORT_SYMBOL_GPL(device_create_bin_file);
+
+/**
+ * device_remove_bin_file - remove sysfs binary attribute file
+ * @dev: device.
+ * @attr: device binary attribute descriptor.
+ */
+void device_remove_bin_file(struct device *dev,
+                            const struct bin_attribute *attr)
+{
+        if (dev)
+                sysfs_remove_bin_file(&dev->kobj, attr);
+}
+EXPORT_SYMBOL_GPL(device_remove_bin_file);
+
+static void klist_children_get(struct klist_node *n)
+{
+        struct device_private *p = to_device_private_parent(n);
+        struct device *dev = p->device;
+
+        get_device(dev);
+}
+
+static void klist_children_put(struct klist_node *n)
+{
+        struct device_private *p = to_device_private_parent(n);
+        struct device *dev = p->device;
+
+        put_device(dev);
+}
+
+/**
+ * device_initialize - init device structure.
+ * @dev: device.
+ *
+ * This prepares the device for use by other layers by initializing
+ * its fields.
+ * It is the first half of device_register(), if called by
+ * that function, though it can also be called separately, so one
+ * may use @dev's fields. In particular, get_device()/put_device()
+ * may be used for reference counting of @dev after calling this
+ * function.
+ *
+ * All fields in @dev must be initialized by the caller to 0, except
+ * for those explicitly set to some other value.  The simplest
+ * approach is to use kzalloc() to allocate the structure containing
+ * @dev.
+ *
+ * NOTE: Use put_device() to give up your reference instead of freeing
+ * @dev directly once you have called this function.
+ */
+void device_initialize(struct device *dev)
+{
+        dev->kobj.kset = devices_kset;
+        kobject_init(&dev->kobj, &device_ktype);
+        INIT_LIST_HEAD(&dev->dma_pools);
+        mutex_init(&dev->mutex);
+        lockdep_set_novalidate_class(&dev->mutex);
+        spin_lock_init(&dev->devres_lock);
+        INIT_LIST_HEAD(&dev->devres_head);
+        device_pm_init(dev);
+        set_dev_node(dev, -1);
+}
+EXPORT_SYMBOL_GPL(device_initialize);
+
+struct kobject *virtual_device_parent(struct device *dev)
+{
+        static struct kobject *virtual_dir = NULL;
+
+        if (!virtual_dir)
+                virtual_dir = kobject_create_and_add("virtual",
+                                                     &devices_kset->kobj);
+
+        return virtual_dir;
+}
+
+struct class_dir {
+        struct kobject kobj;
+        struct class *class;
+};
+
+#define to_class_dir(obj) container_of(obj, struct class_dir, kobj)
+
+static void class_dir_release(struct kobject *kobj)
+{
+        struct class_dir *dir = to_class_dir(kobj);
+        kfree(dir);
+}
+
+static const
+struct kobj_ns_type_operations *class_dir_child_ns_type(struct kobject *kobj)
+{
+        struct class_dir *dir = to_class_dir(kobj);
+        return dir->class->ns_type;
+}
+
+static struct kobj_type class_dir_ktype = {
+        .release        = class_dir_release,
+        .sysfs_ops      = &kobj_sysfs_ops,
+        .child_ns_type  = class_dir_child_ns_type
+};
+
+static struct kobject *
+class_dir_create_and_add(struct class *class, struct kobject *parent_kobj)
+{
+        struct class_dir *dir;
+        int retval;
+
+        dir = kzalloc(sizeof(*dir), GFP_KERNEL);
+        if (!dir)
+                return NULL;
+
+        dir->class = class;
+        kobject_init(&dir->kobj, &class_dir_ktype);
+
+        dir->kobj.kset = &class->p->glue_dirs;
+
+        retval = kobject_add(&dir->kobj, parent_kobj, "%s", class->name);
+        if (retval < 0) {
+                kobject_put(&dir->kobj);
+                return NULL;
+        }
+        return &dir->kobj;
+}
+
+static DEFINE_MUTEX(gdp_mutex);
+
+static struct kobject *get_device_parent(struct device *dev,
+                                         struct device *parent)
+{
+        if (dev->class) {
+                struct kobject *kobj = NULL;
+                struct kobject *parent_kobj;
+                struct kobject *k;
+
+#ifdef CONFIG_BLOCK
+                /* block disks show up in /sys/block */
+                if (sysfs_deprecated && dev->class == &block_class) {
+                        if (parent && parent->class == &block_class)
+                                return &parent->kobj;
+                        return &block_class.p->subsys.kobj;
+                }
+#endif
+
+                /*
+                 * If we have no parent, we live in "virtual".
+                 * Class-devices with a non class-device as parent, live
+                 * in a "glue" directory to prevent namespace collisions.
+                 */
+                if (parent == NULL)
+                        parent_kobj = virtual_device_parent(dev);
+                else if (parent->class && !dev->class->ns_type)
+                        return &parent->kobj;
+                else
+                        parent_kobj = &parent->kobj;
+
+                mutex_lock(&gdp_mutex);
+
+                /* find our class-directory at the parent and reference it */
+                spin_lock(&dev->class->p->glue_dirs.list_lock);
+                list_for_each_entry(k, &dev->class->p->glue_dirs.list, entry)
+                        if (k->parent == parent_kobj) {
+                                kobj = kobject_get(k);
+                                break;
+                        }
+                spin_unlock(&dev->class->p->glue_dirs.list_lock);
+                if (kobj) {
+                        mutex_unlock(&gdp_mutex);
+                        return kobj;
+                }
+
+                /* or create a new class-directory at the parent device */
+                k = class_dir_create_and_add(dev->class, parent_kobj);
+                /* do not emit an uevent for this simple "glue" directory */
+                mutex_unlock(&gdp_mutex);
+                return k;
+        }
+
+        /* subsystems can specify a default root directory for their devices */
+        if (!parent && dev->bus && dev->bus->dev_root)
+                return &dev->bus->dev_root->kobj;
+
+        if (parent)
+                return &parent->kobj;
+        return NULL;
+}
+
+static void cleanup_glue_dir(struct device *dev, struct kobject *glue_dir)
+{
+        /* see if we live in a "glue" directory */
+        if (!glue_dir || !dev->class ||
+            glue_dir->kset != &dev->class->p->glue_dirs)
+                return;
+
+        mutex_lock(&gdp_mutex);
+        kobject_put(glue_dir);
+        mutex_unlock(&gdp_mutex);
+}
+
+static void cleanup_device_parent(struct device *dev)
+{
+        cleanup_glue_dir(dev, dev->kobj.parent);
+}
+
+static int device_add_class_symlinks(struct device *dev)
+{
+        struct device_node *of_node = dev_of_node(dev);
+        int error;
+
+        if (of_node) {
+                error = sysfs_create_link(&dev->kobj, &of_node->kobj,"of_node");
+                if (error)
+                        dev_warn(dev, "Error %d creating of_node link\n",error);
+                /* An error here doesn't warrant bringing down the device */
+        }
+
+        if (!dev->class)
+                return 0;
+
+        error = sysfs_create_link(&dev->kobj,
+                                  &dev->class->p->subsys.kobj,
+                                  "subsystem");
+        if (error)
+                goto out_devnode;
+
+        if (dev->parent && device_is_not_partition(dev)) {
+                error = sysfs_create_link(&dev->kobj, &dev->parent->kobj,
+                                          "device");
+                if (error)
+                        goto out_subsys;
+        }
+
+#ifdef CONFIG_BLOCK
+        /* /sys/block has directories and does not need symlinks */
+        if (sysfs_deprecated && dev->class == &block_class)
+                return 0;
+#endif
+
+        /* link in the class directory pointing to the device */
+        error = sysfs_create_link(&dev->class->p->subsys.kobj,
+                                  &dev->kobj, dev_name(dev));
+        if (error)
+                goto out_device;
+
+        return 0;
+
+out_device:
+        sysfs_remove_link(&dev->kobj, "device");
+
+out_subsys:
+        sysfs_remove_link(&dev->kobj, "subsystem");
+out_devnode:
+        sysfs_remove_link(&dev->kobj, "of_node");
+        return error;
+}
+
+static void device_remove_class_symlinks(struct device *dev)
+{
+        if (dev_of_node(dev))
+                sysfs_remove_link(&dev->kobj, "of_node");
+
+        if (!dev->class)
+                return;
+
+        if (dev->parent && device_is_not_partition(dev))
+                sysfs_remove_link(&dev->kobj, "device");
+        sysfs_remove_link(&dev->kobj, "subsystem");
+#ifdef CONFIG_BLOCK
+        if (sysfs_deprecated && dev->class == &block_class)
+                return;
+#endif
+        sysfs_delete_link(&dev->class->p->subsys.kobj, &dev->kobj, dev_name(dev));
+}
+
+/**
+ * dev_set_name - set a device name
+ * @dev: device
+ * @fmt: format string for the device's name
+ */
+int dev_set_name(struct device *dev, const char *fmt, ...)
+{
+        va_list vargs;
+        int err;
+
+        va_start(vargs, fmt);
+        err = kobject_set_name_vargs(&dev->kobj, fmt, vargs);
+        va_end(vargs);
+        return err;
+}
+EXPORT_SYMBOL_GPL(dev_set_name);
+
+/**
+ * device_to_dev_kobj - select a /sys/dev/ directory for the device
+ * @dev: device
+ *
+ * By default we select char/ for new entries.  Setting class->dev_obj
+ * to NULL prevents an entry from being created.  class->dev_kobj must
+ * be set (or cleared) before any devices are registered to the class
+ * otherwise device_create_sys_dev_entry() and
+ * device_remove_sys_dev_entry() will disagree about the presence of
+ * the link.
+ */
+static struct kobject *device_to_dev_kobj(struct device *dev)
+{
+        struct kobject *kobj;
+
+        if (dev->class)
+                kobj = dev->class->dev_kobj;
+        else
+                kobj = sysfs_dev_char_kobj;
+
+        return kobj;
+}
+
+static int device_create_sys_dev_entry(struct device *dev)
+{
+        struct kobject *kobj = device_to_dev_kobj(dev);
+        int error = 0;
+        char devt_str[15];
+
+        if (kobj) {
+                format_dev_t(devt_str, dev->devt);
+                error = sysfs_create_link(kobj, &dev->kobj, devt_str);
+        }
+
+        return error;
+}
+
+static void device_remove_sys_dev_entry(struct device *dev)
+{
+        struct kobject *kobj = device_to_dev_kobj(dev);
+        char devt_str[15];
+
+        if (kobj) {
+                format_dev_t(devt_str, dev->devt);
+                sysfs_remove_link(kobj, devt_str);
+        }
+}
+
+int device_private_init(struct device *dev)
+{
+        dev->p = kzalloc(sizeof(*dev->p), GFP_KERNEL);
+        if (!dev->p)
+                return -ENOMEM;
+        dev->p->device = dev;
+        klist_init(&dev->p->klist_children, klist_children_get,
+                   klist_children_put);
+        INIT_LIST_HEAD(&dev->p->deferred_probe);
+        return 0;
+}
+
+/**
+ * device_add - add device to device hierarchy.
+ * @dev: device.
+ *
+ * This is part 2 of device_register(), though may be called
+ * separately _iff_ device_initialize() has been called separately.
+ *
+ * This adds @dev to the kobject hierarchy via kobject_add(), adds it
+ * to the global and sibling lists for the device, then
+ * adds it to the other relevant subsystems of the driver model.
+ *
+ * Do not call this routine or device_register() more than once for
+ * any device structure.  The driver model core is not designed to work
+ * with devices that get unregistered and then spring back to life.
+ * (Among other things, it's very hard to guarantee that all references
+ * to the previous incarnation of @dev have been dropped.)  Allocate
+ * and register a fresh new struct device instead.
+ *
+ * NOTE: _Never_ directly free @dev after calling this function, even
+ * if it returned an error! Always use put_device() to give up your
+ * reference instead.
+ */
+int device_add(struct device *dev)
+{
+        struct device *parent = NULL;
+        struct kobject *kobj;
+        struct class_interface *class_intf;
+        int error = -EINVAL;
+
+        dev = get_device(dev);
+        if (!dev)
+                goto done;
+
+        if (!dev->p) {
+                error = device_private_init(dev);
+                if (error)
+                        goto done;
+        }
+
+        /*
+         * for statically allocated devices, which should all be converted
+         * some day, we need to initialize the name. We prevent reading back
+         * the name, and force the use of dev_name()
+         */
+        if (dev->init_name) {
+                dev_set_name(dev, "%s", dev->init_name);
+                 dev->init_name = NULL;
+         }
+ 
+         /* subsystems can specify simple device enumeration */
+         if (!dev_name(dev) && dev->bus && dev->bus->dev_name)
+                 dev_set_name(dev, "%s%u", dev->bus->dev_name, dev->id);
+ 
+         if (!dev_name(dev)) {
+                 error = -EINVAL;
+                 goto name_error;
+         }
+ 
+         pr_debug("device: '%s': %s\n", dev_name(dev), __func__);
+ 
+         parent = get_device(dev->parent);
+         kobj = get_device_parent(dev, parent);
+         if (kobj)
+                 dev->kobj.parent = kobj;
+ 
+         /* use parent numa_node */
+         if (parent)
+                 set_dev_node(dev, dev_to_node(parent));
+ 
+         /* first, register with generic layer. */
+         /* we require the name to be set before, and pass NULL */
+         error = kobject_add(&dev->kobj, dev->kobj.parent, NULL);
+         if (error)
+                 goto Error;
+ 
+         /* notify platform of device entry */
+         if (platform_notify)
+                 platform_notify(dev);
+ 
+         error = device_create_file(dev, &dev_attr_uevent);
+         if (error)
+                 goto attrError;
+ 
+         error = device_add_class_symlinks(dev);
+         if (error)
+                 goto SymlinkError;
+         error = device_add_attrs(dev);
+         if (error)
+                 goto AttrsError;
+         error = bus_add_device(dev);
+         if (error)
+                 goto BusError;
+         error = dpm_sysfs_add(dev);
+         if (error)
+                 goto DPMError;
+         device_pm_add(dev);
+ 
+         if (MAJOR(dev->devt)) {
+                 error = device_create_file(dev, &dev_attr_dev);
+                 if (error)
+                         goto DevAttrError;
+ 
+                 error = device_create_sys_dev_entry(dev);
+                 if (error)
+                         goto SysEntryError;
+ 
+                 devtmpfs_create_node(dev);
+         }
+ 
+         /* Notify clients of device addition.  This call must come
+          * after dpm_sysfs_add() and before kobject_uevent().
+          */
+         if (dev->bus)
+                 blocking_notifier_call_chain(&dev->bus->p->bus_notifier,
+                                              BUS_NOTIFY_ADD_DEVICE, dev);
+ 
+         kobject_uevent(&dev->kobj, KOBJ_ADD);
+         bus_probe_device(dev);
+         if (parent)
+                 klist_add_tail(&dev->p->knode_parent,
+                                &parent->p->klist_children);
+ 
+         if (dev->class) {
+                 mutex_lock(&dev->class->p->mutex);
+                 /* tie the class to the device */
+                 klist_add_tail(&dev->knode_class,
+                                &dev->class->p->klist_devices);
+ 
+                 /* notify any interfaces that the device is here */
+                 list_for_each_entry(class_intf,
+                                     &dev->class->p->interfaces, node)
+                         if (class_intf->add_dev)
+                                 class_intf->add_dev(dev, class_intf);
+                 mutex_unlock(&dev->class->p->mutex);
+         }
+ done:
+         put_device(dev);
+         return error;
+  SysEntryError:
+         if (MAJOR(dev->devt))
+                 device_remove_file(dev, &dev_attr_dev);
+  DevAttrError:
+         device_pm_remove(dev);
+         dpm_sysfs_remove(dev);
+  DPMError:
+         bus_remove_device(dev);
+  BusError:
+         device_remove_attrs(dev);
+  AttrsError:
+         device_remove_class_symlinks(dev);
+  SymlinkError:
+         device_remove_file(dev, &dev_attr_uevent);
+  attrError:
+         kobject_uevent(&dev->kobj, KOBJ_REMOVE);
+         kobject_del(&dev->kobj);
+  Error:
+         cleanup_device_parent(dev);
+         put_device(parent);
+ name_error:
+         kfree(dev->p);
+         dev->p = NULL;
+         goto done;
+ }
+ EXPORT_SYMBOL_GPL(device_add);
+ 
+ /**
+  * device_register - register a device with the system.
+  * @dev: pointer to the device structure
+  *
+  * This happens in two clean steps - initialize the device
+  * and add it to the system. The two steps can be called
+  * separately, but this is the easiest and most common.
+  * I.e. you should only call the two helpers separately if
+  * have a clearly defined need to use and refcount the device
+  * before it is added to the hierarchy.
+  *
+  * For more information, see the kerneldoc for device_initialize()
+  * and device_add().
+  *
+  * NOTE: _Never_ directly free @dev after calling this function, even
+  * if it returned an error! Always use put_device() to give up the
+  * reference initialized in this function instead.
+  */
+ int device_register(struct device *dev)
+ {
+         device_initialize(dev);
+         return device_add(dev);
+ }
+ EXPORT_SYMBOL_GPL(device_register);
+ 
+ /**
+  * get_device - increment reference count for device.
+  * @dev: device.
+  *
+  * This simply forwards the call to kobject_get(), though
+  * we do take care to provide for the case that we get a NULL
+  * pointer passed in.
+  */
+ struct device *get_device(struct device *dev)
+ {
+         return dev ? kobj_to_dev(kobject_get(&dev->kobj)) : NULL;
+ }
+ EXPORT_SYMBOL_GPL(get_device);
+ 
+ /**
+  * put_device - decrement reference count.
+  * @dev: device in question.
+  */
+ void put_device(struct device *dev)
+ {
+         /* might_sleep(); */
+         if (dev)
+                 kobject_put(&dev->kobj);
+ }
+ EXPORT_SYMBOL_GPL(put_device);
+ 
+ /**
+  * device_del - delete device from system.
+  * @dev: device.
+  *
+  * This is the first part of the device unregistration
+  * sequence. This removes the device from the lists we control
+  * from here, has it removed from the other driver model
+  * subsystems it was added to in device_add(), and removes it
+  * from the kobject hierarchy.
+  *
+  * NOTE: this should be called manually _iff_ device_add() was
+  * also called manually.
+  */
+ void device_del(struct device *dev)
+ {
+         struct device *parent = dev->parent;
+         struct class_interface *class_intf;
+ 
+         /* Notify clients of device removal.  This call must come
+          * before dpm_sysfs_remove().
+          */
+         if (dev->bus)
+                 blocking_notifier_call_chain(&dev->bus->p->bus_notifier,
+                                              BUS_NOTIFY_DEL_DEVICE, dev);
+         dpm_sysfs_remove(dev);
+         if (parent)
+                 klist_del(&dev->p->knode_parent);
+         if (MAJOR(dev->devt)) {
+                 devtmpfs_delete_node(dev);
+                 device_remove_sys_dev_entry(dev);
+                 device_remove_file(dev, &dev_attr_dev);
+         }
+         if (dev->class) {
+                 device_remove_class_symlinks(dev);
+ 
+                 mutex_lock(&dev->class->p->mutex);
+                 /* notify any interfaces that the device is now gone */
+                 list_for_each_entry(class_intf,
+                                     &dev->class->p->interfaces, node)
+                         if (class_intf->remove_dev)
+                                 class_intf->remove_dev(dev, class_intf);
+                 /* remove the device from the class list */
+                 klist_del(&dev->knode_class);
+                 mutex_unlock(&dev->class->p->mutex);
+         }
+         device_remove_file(dev, &dev_attr_uevent);
+         device_remove_attrs(dev);
+         bus_remove_device(dev);
+         device_pm_remove(dev);
+         driver_deferred_probe_del(dev);
+ 
+         /* Notify the platform of the removal, in case they
+          * need to do anything...
+          */
+         if (platform_notify_remove)
+                 platform_notify_remove(dev);
+         if (dev->bus)
+                 blocking_notifier_call_chain(&dev->bus->p->bus_notifier,
+                                              BUS_NOTIFY_REMOVED_DEVICE, dev);
+         kobject_uevent(&dev->kobj, KOBJ_REMOVE);
+         cleanup_device_parent(dev);
+         kobject_del(&dev->kobj);
+         put_device(parent);
+ }
+ EXPORT_SYMBOL_GPL(device_del);
+ 
+ /**
+  * device_unregister - unregister device from system.
+  * @dev: device going away.
+  *
+  * We do this in two parts, like we do device_register(). First,
+  * we remove it from all the subsystems with device_del(), then
+  * we decrement the reference count via put_device(). If that
+  * is the final reference count, the device will be cleaned up
+  * via device_release() above. Otherwise, the structure will
+  * stick around until the final reference to the device is dropped.
+  */
+ void device_unregister(struct device *dev)
+ {
+         pr_debug("device: '%s': %s\n", dev_name(dev), __func__);
+         device_del(dev);
+         put_device(dev);
+ }
+ EXPORT_SYMBOL_GPL(device_unregister);
+ 
+ static struct device *next_device(struct klist_iter *i)
+ {
+         struct klist_node *n = klist_next(i);
+         struct device *dev = NULL;
+         struct device_private *p;
+ 
+         if (n) {
+                 p = to_device_private_parent(n);
+                 dev = p->device;
+         }
+         return dev;
+ }
+ 
+ /**
+  * device_get_devnode - path of device node file
+  * @dev: device
+  * @mode: returned file access mode
+  * @uid: returned file owner
+  * @gid: returned file group
+  * @tmp: possibly allocated string
+  *
+  * Return the relative path of a possible device node.
+  * Non-default names may need to allocate a memory to compose
+  * a name. This memory is returned in tmp and needs to be
+  * freed by the caller.
+  */
+ const char *device_get_devnode(struct device *dev,
+                                umode_t *mode, kuid_t *uid, kgid_t *gid,
+                                const char **tmp)
+ {
+         char *s;
+ 
+         *tmp = NULL;
+ 
+         /* the device type may provide a specific name */
+         if (dev->type && dev->type->devnode)
+                 *tmp = dev->type->devnode(dev, mode, uid, gid);
+         if (*tmp)
+                 return *tmp;
+ 
+         /* the class may provide a specific name */
+         if (dev->class && dev->class->devnode)
+                 *tmp = dev->class->devnode(dev, mode);
+         if (*tmp)
+                 return *tmp;
+ 
+         /* return name without allocation, tmp == NULL */
+         if (strchr(dev_name(dev), '!') == NULL)
+                 return dev_name(dev);
+ 
+         /* replace '!' in the name with '/' */
+         *tmp = kstrdup(dev_name(dev), GFP_KERNEL);
+         if (!*tmp)
+                 return NULL;
+         while ((s = strchr(*tmp, '!')))
+                 s[0] = '/';
+         return *tmp;
+ }
+ 
+ /**
+  * device_for_each_child - device child iterator.
+  * @parent: parent struct device.
+  * @fn: function to be called for each device.
+  * @data: data for the callback.
+  *
+  * Iterate over @parent's child devices, and call @fn for each,
+  * passing it @data.
+  *
+  * We check the return of @fn each time. If it returns anything
+  * other than 0, we break out and return that value.
+  */
+ int device_for_each_child(struct device *parent, void *data,
+                           int (*fn)(struct device *dev, void *data))
+ {
+         struct klist_iter i;
+         struct device *child;
+         int error = 0;
+ 
+         if (!parent->p)
+                 return 0;
+ 
+         klist_iter_init(&parent->p->klist_children, &i);
+         while ((child = next_device(&i)) && !error)
+                 error = fn(child, data);
+         klist_iter_exit(&i);
+         return error;
+ }
+ EXPORT_SYMBOL_GPL(device_for_each_child);
+ 
+ /**
+  * device_find_child - device iterator for locating a particular device.
+  * @parent: parent struct device
+  * @match: Callback function to check device
+  * @data: Data to pass to match function
+  *
+  * This is similar to the device_for_each_child() function above, but it
+  * returns a reference to a device that is 'found' for later use, as
+  * determined by the @match callback.
+  *
+  * The callback should return 0 if the device doesn't match and non-zero
+  * if it does.  If the callback returns non-zero and a reference to the
+  * current device can be obtained, this function will return to the caller
+  * and not iterate over any more devices.
+  *
+  * NOTE: you will need to drop the reference with put_device() after use.
+  */
+ struct device *device_find_child(struct device *parent, void *data,
+                                  int (*match)(struct device *dev, void *data))
+ {
+         struct klist_iter i;
+         struct device *child;
+ 
+         if (!parent)
+                 return NULL;
+ 
+         klist_iter_init(&parent->p->klist_children, &i);
+         while ((child = next_device(&i)))
+                 if (match(child, data) && get_device(child))
+                         break;
+         klist_iter_exit(&i);
+         return child;
+ }
+ EXPORT_SYMBOL_GPL(device_find_child);
+ 
+ int __init devices_init(void)
+ {
+         devices_kset = kset_create_and_add("devices", &device_uevent_ops, NULL);
+         if (!devices_kset)
+                 return -ENOMEM;
+         dev_kobj = kobject_create_and_add("dev", NULL);
+         if (!dev_kobj)
+                 goto dev_kobj_err;
+         sysfs_dev_block_kobj = kobject_create_and_add("block", dev_kobj);
+         if (!sysfs_dev_block_kobj)
+                 goto block_kobj_err;
+         sysfs_dev_char_kobj = kobject_create_and_add("char", dev_kobj);
+         if (!sysfs_dev_char_kobj)
+                 goto char_kobj_err;
+ 
+         return 0;
+ 
+  char_kobj_err:
+         kobject_put(sysfs_dev_block_kobj);
+  block_kobj_err:
+         kobject_put(dev_kobj);
+  dev_kobj_err:
+         kset_unregister(devices_kset);
+         return -ENOMEM;
+ }
+ 
+ static int device_check_offline(struct device *dev, void *not_used)
+ {
+         int ret;
+ 
+         ret = device_for_each_child(dev, NULL, device_check_offline);
+         if (ret)
+                 return ret;
+ 
+         return device_supports_offline(dev) && !dev->offline ? -EBUSY : 0;
+ }
+ 
+ /**
+  * device_offline - Prepare the device for hot-removal.
+  * @dev: Device to be put offline.
+  *
+  * Execute the device bus type's .offline() callback, if present, to prepare
+  * the device for a subsequent hot-removal.  If that succeeds, the device must
+  * not be used until either it is removed or its bus type's .online() callback
+  * is executed.
+  *
+  * Call under device_hotplug_lock.
+  */
+ int device_offline(struct device *dev)
+ {
+         int ret;
+ 
+         if (dev->offline_disabled)
+                 return -EPERM;
+ 
+         ret = device_for_each_child(dev, NULL, device_check_offline);
+         if (ret)
+                 return ret;
+ 
+         device_lock(dev);
+         if (device_supports_offline(dev)) {
+                 if (dev->offline) {
+                         ret = 1;
+                 } else {
+                         ret = dev->bus->offline(dev);
+                         if (!ret) {
+                                 kobject_uevent(&dev->kobj, KOBJ_OFFLINE);
+                                 dev->offline = true;
+                         }
+                 }
+         }
+         device_unlock(dev);
+ 
+         return ret;
+ }
+ 
+ /**
+  * device_online - Put the device back online after successful device_offline().
+  * @dev: Device to be put back online.
+  *
+  * If device_offline() has been successfully executed for @dev, but the device
+  * has not been removed subsequently, execute its bus type's .online() callback
+  * to indicate that the device can be used again.
+  *
+  * Call under device_hotplug_lock.
+  */
+ int device_online(struct device *dev)
+ {
+         int ret = 0;
+ 
+         device_lock(dev);
+         if (device_supports_offline(dev)) {
+                 if (dev->offline) {
+                         ret = dev->bus->online(dev);
+                         if (!ret) {
+                                 kobject_uevent(&dev->kobj, KOBJ_ONLINE);
+                                 dev->offline = false;
+                         }
+                 } else {
+                         ret = 1;
+                 }
+         }
+         device_unlock(dev);
+ 
+         return ret;
+ }
+ 
+ struct root_device {
+         struct device dev;
+         struct module *owner;
+ };
+ 
+ static inline struct root_device *to_root_device(struct device *d)
+ {
+         return container_of(d, struct root_device, dev);
+ }
+ 
+ static void root_device_release(struct device *dev)
+ {
+         kfree(to_root_device(dev));
+ }
+ 
+ /**
+  * __root_device_register - allocate and register a root device
+  * @name: root device name
+  * @owner: owner module of the root device, usually THIS_MODULE
+  *
+  * This function allocates a root device and registers it
+  * using device_register(). In order to free the returned
+  * device, use root_device_unregister().
+  *
+  * Root devices are dummy devices which allow other devices
+  * to be grouped under /sys/devices. Use this function to
+  * allocate a root device and then use it as the parent of
+  * any device which should appear under /sys/devices/{name}
+  *
+  * The /sys/devices/{name} directory will also contain a
+  * 'module' symlink which points to the @owner directory
+  * in sysfs.
+  *
+  * Returns &struct device pointer on success, or ERR_PTR() on error.
+  *
+  * Note: You probably want to use root_device_register().
+  */
+ struct device *__root_device_register(const char *name, struct module *owner)
+ {
+         struct root_device *root;
+         int err = -ENOMEM;
+ 
+         root = kzalloc(sizeof(struct root_device), GFP_KERNEL);
+         if (!root)
+                 return ERR_PTR(err);
+ 
+         err = dev_set_name(&root->dev, "%s", name);
+         if (err) {
+                 kfree(root);
+                 return ERR_PTR(err);
+         }
+ 
+         root->dev.release = root_device_release;
+ 
+         err = device_register(&root->dev);
+         if (err) {
+                 put_device(&root->dev);
+                 return ERR_PTR(err);
+         }
+ 
+ #ifdef CONFIG_MODULES   /* gotta find a "cleaner" way to do this */
+         if (owner) {
+                 struct module_kobject *mk = &owner->mkobj;
+ 
+                 err = sysfs_create_link(&root->dev.kobj, &mk->kobj, "module");
+                 if (err) {
+                         device_unregister(&root->dev);
+                         return ERR_PTR(err);
+                 }
+                 root->owner = owner;
+         }
+ #endif
+ 
+         return &root->dev;
+ }
+ EXPORT_SYMBOL_GPL(__root_device_register);
+ 
+ /**
+  * root_device_unregister - unregister and free a root device
+  * @dev: device going away
+  *
+  * This function unregisters and cleans up a device that was created by
+  * root_device_register().
+  */
+ void root_device_unregister(struct device *dev)
+ {
+         struct root_device *root = to_root_device(dev);
+ 
+         if (root->owner)
+                 sysfs_remove_link(&root->dev.kobj, "module");
+ 
+         device_unregister(dev);
+ }
+ EXPORT_SYMBOL_GPL(root_device_unregister);
+ 
+ 
+ static void device_create_release(struct device *dev)
+ {
+         pr_debug("device: '%s': %s\n", dev_name(dev), __func__);
+         kfree(dev);
+ }
+ 
+ static struct device *
+ device_create_groups_vargs(struct class *class, struct device *parent,
+                            dev_t devt, void *drvdata,
+                            const struct attribute_group **groups,
+                            const char *fmt, va_list args)
+ {
+         struct device *dev = NULL;
+         int retval = -ENODEV;
+ 
+         if (class == NULL || IS_ERR(class))
+                 goto error;
+ 
+         dev = kzalloc(sizeof(*dev), GFP_KERNEL);
+         if (!dev) {
+                 retval = -ENOMEM;
+                 goto error;
+         }
+ 
+         device_initialize(dev);
+         dev->devt = devt;
+         dev->class = class;
+         dev->parent = parent;
+         dev->groups = groups;
+         dev->release = device_create_release;
+         dev_set_drvdata(dev, drvdata);
+ 
+         retval = kobject_set_name_vargs(&dev->kobj, fmt, args);
+         if (retval)
+                 goto error;
+ 
+         retval = device_add(dev);
+         if (retval)
+                 goto error;
+ 
+         return dev;
+ 
+ error:
+         put_device(dev);
+         return ERR_PTR(retval);
+ }
+ 
+ /**
+  * device_create_vargs - creates a device and registers it with sysfs
+  * @class: pointer to the struct class that this device should be registered to
+  * @parent: pointer to the parent struct device of this new device, if any
+  * @devt: the dev_t for the char device to be added
+  * @drvdata: the data to be added to the device for callbacks
+  * @fmt: string for the device's name
+  * @args: va_list for the device's name
+  *
+  * This function can be used by char device classes.  A struct device
+  * will be created in sysfs, registered to the specified class.
+  *
+  * A "dev" file will be created, showing the dev_t for the device, if
+  * the dev_t is not 0,0.
+  * If a pointer to a parent struct device is passed in, the newly created
+  * struct device will be a child of that device in sysfs.
+  * The pointer to the struct device will be returned from the call.
+  * Any further sysfs files that might be required can be created using this
+  * pointer.
+  *
+  * Returns &struct device pointer on success, or ERR_PTR() on error.
+  *
+  * Note: the struct class passed to this function must have previously
+  * been created with a call to class_create().
+  */
+ struct device *device_create_vargs(struct class *class, struct device *parent,
+                                    dev_t devt, void *drvdata, const char *fmt,
+                                    va_list args)
+ {
+         return device_create_groups_vargs(class, parent, devt, drvdata, NULL,
+                                           fmt, args);
+ }
+ EXPORT_SYMBOL_GPL(device_create_vargs);
+ 
+ /**
+  * device_create - creates a device and registers it with sysfs
+  * @class: pointer to the struct class that this device should be registered to
+  * @parent: pointer to the parent struct device of this new device, if any
+  * @devt: the dev_t for the char device to be added
+  * @drvdata: the data to be added to the device for callbacks
+  * @fmt: string for the device's name
+  *
+  * This function can be used by char device classes.  A struct device
+  * will be created in sysfs, registered to the specified class.
+  *
+  * A "dev" file will be created, showing the dev_t for the device, if
+  * the dev_t is not 0,0.
+  * If a pointer to a parent struct device is passed in, the newly created
+  * struct device will be a child of that device in sysfs.
+  * The pointer to the struct device will be returned from the call.
+  * Any further sysfs files that might be required can be created using this
+  * pointer.
+  *
+  * Returns &struct device pointer on success, or ERR_PTR() on error.
+  *
+  * Note: the struct class passed to this function must have previously
+  * been created with a call to class_create().
+  */
+ struct device *device_create(struct class *class, struct device *parent,
+                              dev_t devt, void *drvdata, const char *fmt, ...)
+ {
+         va_list vargs;
+         struct device *dev;
+ 
+         va_start(vargs, fmt);
+         dev = device_create_vargs(class, parent, devt, drvdata, fmt, vargs);
+         va_end(vargs);
+         return dev;
+ }
+ EXPORT_SYMBOL_GPL(device_create);
+ 
+ /**
+  * device_create_with_groups - creates a device and registers it with sysfs
+  * @class: pointer to the struct class that this device should be registered to
+  * @parent: pointer to the parent struct device of this new device, if any
+  * @devt: the dev_t for the char device to be added
+  * @drvdata: the data to be added to the device for callbacks
+  * @groups: NULL-terminated list of attribute groups to be created
+  * @fmt: string for the device's name
+  *
+  * This function can be used by char device classes.  A struct device
+  * will be created in sysfs, registered to the specified class.
+  * Additional attributes specified in the groups parameter will also
+  * be created automatically.
+  *
+  * A "dev" file will be created, showing the dev_t for the device, if
+  * the dev_t is not 0,0.
+  * If a pointer to a parent struct device is passed in, the newly created
+  * struct device will be a child of that device in sysfs.
+  * The pointer to the struct device will be returned from the call.
+  * Any further sysfs files that might be required can be created using this
+  * pointer.
+  *
+  * Returns &struct device pointer on success, or ERR_PTR() on error.
+  *
+  * Note: the struct class passed to this function must have previously
+  * been created with a call to class_create().
+  */
+ struct device *device_create_with_groups(struct class *class,
+                                          struct device *parent, dev_t devt,
+                                          void *drvdata,
+                                          const struct attribute_group **groups,
+                                          const char *fmt, ...)
+ {
+         va_list vargs;
+         struct device *dev;
+ 
+         va_start(vargs, fmt);
+         dev = device_create_groups_vargs(class, parent, devt, drvdata, groups,
+                                          fmt, vargs);
+         va_end(vargs);
+         return dev;
+ }
+ EXPORT_SYMBOL_GPL(device_create_with_groups);
+ 
+ static int __match_devt(struct device *dev, const void *data)
+ {
+         const dev_t *devt = data;
+ 
+         return dev->devt == *devt;
+ }
+ 
+ /**
+  * device_destroy - removes a device that was created with device_create()
+  * @class: pointer to the struct class that this device was registered with
+  * @devt: the dev_t of the device that was previously registered
+  *
+  * This call unregisters and cleans up a device that was created with a
+  * call to device_create().
+  */
+ void device_destroy(struct class *class, dev_t devt)
+ {
+         struct device *dev;
+ 
+         dev = class_find_device(class, NULL, &devt, __match_devt);
+         if (dev) {
+                 put_device(dev);
+                 device_unregister(dev);
+         }
+ }
+ EXPORT_SYMBOL_GPL(device_destroy);
+ 
+ /**
+  * device_rename - renames a device
+  * @dev: the pointer to the struct device to be renamed
+  * @new_name: the new name of the device
+  *
+  * It is the responsibility of the caller to provide mutual
+  * exclusion between two different calls of device_rename
+  * on the same device to ensure that new_name is valid and
+  * won't conflict with other devices.
+  *
+  * Note: Don't call this function.  Currently, the networking layer calls this
+  * function, but that will change.  The following text from Kay Sievers offers
+  * some insight:
+  *
+  * Renaming devices is racy at many levels, symlinks and other stuff are not
+  * replaced atomically, and you get a "move" uevent, but it's not easy to
+  * connect the event to the old and new device. Device nodes are not renamed at
+  * all, there isn't even support for that in the kernel now.
+  *
+  * In the meantime, during renaming, your target name might be taken by another
+  * driver, creating conflicts. Or the old name is taken directly after you
+  * renamed it -- then you get events for the same DEVPATH, before you even see
+  * the "move" event. It's just a mess, and nothing new should ever rely on
+  * kernel device renaming. Besides that, it's not even implemented now for
+  * other things than (driver-core wise very simple) network devices.
+  *
+  * We are currently about to change network renaming in udev to completely
+  * disallow renaming of devices in the same namespace as the kernel uses,
+  * because we can't solve the problems properly, that arise with swapping names
+  * of multiple interfaces without races. Means, renaming of eth[0-9]* will only
+  * be allowed to some other name than eth[0-9]*, for the aforementioned
+  * reasons.
+  *
+  * Make up a "real" name in the driver before you register anything, or add
+  * some other attributes for userspace to find the device, or use udev to add
+  * symlinks -- but never rename kernel devices later, it's a complete mess. We
+  * don't even want to get into that and try to implement the missing pieces in
+  * the core. We really have other pieces to fix in the driver core mess. :)
+  */
+ int device_rename(struct device *dev, const char *new_name)
+ {
+         struct kobject *kobj = &dev->kobj;
+         char *old_device_name = NULL;
+         int error;
+ 
+         dev = get_device(dev);
+         if (!dev)
+                 return -EINVAL;
+ 
+         dev_dbg(dev, "renaming to %s\n", new_name);
+ 
+         old_device_name = kstrdup(dev_name(dev), GFP_KERNEL);
+         if (!old_device_name) {
+                 error = -ENOMEM;
+                 goto out;
+         }
+ 
+         if (dev->class) {
+                 error = sysfs_rename_link_ns(&dev->class->p->subsys.kobj,
+                                              kobj, old_device_name,
+                                              new_name, kobject_namespace(kobj));
+                 if (error)
+                         goto out;
+         }
+ 
+         error = kobject_rename(kobj, new_name);
+         if (error)
+                 goto out;
+ 
+ out:
+         put_device(dev);
+ 
+         kfree(old_device_name);
+ 
+         return error;
+ }
+ EXPORT_SYMBOL_GPL(device_rename);
+ 
+ static int device_move_class_links(struct device *dev,
+                                    struct device *old_parent,
+                                    struct device *new_parent)
+ {
+         int error = 0;
+ 
+         if (old_parent)
+                 sysfs_remove_link(&dev->kobj, "device");
+         if (new_parent)
+                 error = sysfs_create_link(&dev->kobj, &new_parent->kobj,
+                                           "device");
+         return error;
+ }
+ 
+ /**
+  * device_move - moves a device to a new parent
+  * @dev: the pointer to the struct device to be moved
+  * @new_parent: the new parent of the device (can by NULL)
+  * @dpm_order: how to reorder the dpm_list
+  */
+ int device_move(struct device *dev, struct device *new_parent,
+                 enum dpm_order dpm_order)
+ {
+         int error;
+         struct device *old_parent;
+         struct kobject *new_parent_kobj;
+ 
+         dev = get_device(dev);
+         if (!dev)
+                 return -EINVAL;
+ 
+         device_pm_lock();
+         new_parent = get_device(new_parent);
+         new_parent_kobj = get_device_parent(dev, new_parent);
+ 
+         pr_debug("device: '%s': %s: moving to '%s'\n", dev_name(dev),
+                  __func__, new_parent ? dev_name(new_parent) : "<NULL>");
+         error = kobject_move(&dev->kobj, new_parent_kobj);
+         if (error) {
+                 cleanup_glue_dir(dev, new_parent_kobj);
+                 put_device(new_parent);
+                 goto out;
+         }
+         old_parent = dev->parent;
+         dev->parent = new_parent;
+         if (old_parent)
+                 klist_remove(&dev->p->knode_parent);
+         if (new_parent) {
+                 klist_add_tail(&dev->p->knode_parent,
+                                &new_parent->p->klist_children);
+                 set_dev_node(dev, dev_to_node(new_parent));
+         }
+ 
+         if (dev->class) {
+                 error = device_move_class_links(dev, old_parent, new_parent);
+                 if (error) {
+                         /* We ignore errors on cleanup since we're hosed anyway... */
+                         device_move_class_links(dev, new_parent, old_parent);
+                         if (!kobject_move(&dev->kobj, &old_parent->kobj)) {
+                                 if (new_parent)
+                                         klist_remove(&dev->p->knode_parent);
+                                 dev->parent = old_parent;
+                                 if (old_parent) {
+                                         klist_add_tail(&dev->p->knode_parent,
+                                                        &old_parent->p->klist_children);
+                                         set_dev_node(dev, dev_to_node(old_parent));
+                                 }
+                         }
+                         cleanup_glue_dir(dev, new_parent_kobj);
+                         put_device(new_parent);
+                         goto out;
+                 }
+         }
+         switch (dpm_order) {
+         case DPM_ORDER_NONE:
+                 break;
+         case DPM_ORDER_DEV_AFTER_PARENT:
+                 device_pm_move_after(dev, new_parent);
+                 break;
+         case DPM_ORDER_PARENT_BEFORE_DEV:
+                 device_pm_move_before(new_parent, dev);
+                 break;
+         case DPM_ORDER_DEV_LAST:
+                 device_pm_move_last(dev);
+                 break;
+         }
+ 
+         put_device(old_parent);
+ out:
+         device_pm_unlock();
+         put_device(dev);
+         return error;
+ }
+ EXPORT_SYMBOL_GPL(device_move);
+ 
+ /**
+  * device_shutdown - call ->shutdown() on each device to shutdown.
+  */
+ void device_shutdown(void)
+ {
+         struct device *dev, *parent;
+ 
+         spin_lock(&devices_kset->list_lock);
+         /*
+          * Walk the devices list backward, shutting down each in turn.
+          * Beware that device unplug events may also start pulling
+          * devices offline, even as the system is shutting down.
+          */
+         while (!list_empty(&devices_kset->list)) {
+                 dev = list_entry(devices_kset->list.prev, struct device,
+                                 kobj.entry);
+ 
+                 /*
+                  * hold reference count of device's parent to
+                  * prevent it from being freed because parent's
+                  * lock is to be held
+                  */
+                 parent = get_device(dev->parent);
+                 get_device(dev);
+                 /*
+                  * Make sure the device is off the kset list, in the
+                  * event that dev->*->shutdown() doesn't remove it.
+                  */
+                 list_del_init(&dev->kobj.entry);
+                 spin_unlock(&devices_kset->list_lock);
+ 
+                 /* hold lock to avoid race with probe/release */
+                 if (parent)
+                         device_lock(parent);
+                 device_lock(dev);
+ 
+                 /* Don't allow any more runtime suspends */
+                 pm_runtime_get_noresume(dev);
+                 pm_runtime_barrier(dev);
+ 
+                 if (dev->bus && dev->bus->shutdown) {
+                         if (initcall_debug)
+                                 dev_info(dev, "shutdown\n");
+                         dev->bus->shutdown(dev);
+                 } else if (dev->driver && dev->driver->shutdown) {
+                         if (initcall_debug)
+                                 dev_info(dev, "shutdown\n");
+                         dev->driver->shutdown(dev);
+                 }
+ 
+                 device_unlock(dev);
+                 if (parent)
+                         device_unlock(parent);
+ 
+                 put_device(dev);
+                 put_device(parent);
+ 
+                 spin_lock(&devices_kset->list_lock);
+         }
+         spin_unlock(&devices_kset->list_lock);
+ }
+ 
+ /*
+  * Device logging functions
+  */
+ 
+ #ifdef CONFIG_PRINTK
+ static int
+ create_syslog_header(const struct device *dev, char *hdr, size_t hdrlen)
+ {
+         const char *subsys;
+         size_t pos = 0;
+ 
+         if (dev->class)
+                 subsys = dev->class->name;
+         else if (dev->bus)
+                 subsys = dev->bus->name;
+         else
+                 return 0;
+ 
+         pos += snprintf(hdr + pos, hdrlen - pos, "SUBSYSTEM=%s", subsys);
+         if (pos >= hdrlen)
+                 goto overflow;
+ 
+         /*
+          * Add device identifier DEVICE=:
+          *   b12:8         block dev_t
+          *   c127:3        char dev_t
+          *   n8            netdev ifindex
+          *   +sound:card0  subsystem:devname
+          */
+         if (MAJOR(dev->devt)) {
+                 char c;
+ 
+                 if (strcmp(subsys, "block") == 0)
+                         c = 'b';
+                 else
+                         c = 'c';
+                 pos++;
+                 pos += snprintf(hdr + pos, hdrlen - pos,
+                                 "DEVICE=%c%u:%u",
+                                 c, MAJOR(dev->devt), MINOR(dev->devt));
+         } else if (strcmp(subsys, "net") == 0) {
+                 struct net_device *net = to_net_dev(dev);
+ 
+                 pos++;
+                 pos += snprintf(hdr + pos, hdrlen - pos,
+                                 "DEVICE=n%u", net->ifindex);
+         } else {
+                 pos++;
+                 pos += snprintf(hdr + pos, hdrlen - pos,
+                                 "DEVICE=+%s:%s", subsys, dev_name(dev));
+         }
+ 
+         if (pos >= hdrlen)
+                 goto overflow;
+ 
+         return pos;
+ 
+ overflow:
+         dev_WARN(dev, "device/subsystem name too long");
+         return 0;
+ }
+ 
+ int dev_vprintk_emit(int level, const struct device *dev,
+                      const char *fmt, va_list args)
+ {
+         char hdr[128];
+         size_t hdrlen;
+ 
+         hdrlen = create_syslog_header(dev, hdr, sizeof(hdr));
+ 
+         return vprintk_emit(0, level, hdrlen ? hdr : NULL, hdrlen, fmt, args);
+ }
+ EXPORT_SYMBOL(dev_vprintk_emit);
+ 
+ int dev_printk_emit(int level, const struct device *dev, const char *fmt, ...)
+ {
+         va_list args;
+         int r;
+ 
+         va_start(args, fmt);
+ 
+         r = dev_vprintk_emit(level, dev, fmt, args);
+ 
+         va_end(args);
+ 
+         return r;
+ }
+ EXPORT_SYMBOL(dev_printk_emit);
+ 
+ static void __dev_printk(const char *level, const struct device *dev,
+                         struct va_format *vaf)
+ {
+         if (dev)
+                 dev_printk_emit(level[1] - '', dev, "%s %s: %pV",
+                                 dev_driver_string(dev), dev_name(dev), vaf);
+         else
+                 printk("%s(NULL device *): %pV", level, vaf);
+ }
+ 
+ void dev_printk(const char *level, const struct device *dev,
+                 const char *fmt, ...)
+ {
+         struct va_format vaf;
+         va_list args;
+ 
+         va_start(args, fmt);
+ 
+         vaf.fmt = fmt;
+         vaf.va = &args;
+ 
+         __dev_printk(level, dev, &vaf);
+ 
+         va_end(args);
+ }
+ EXPORT_SYMBOL(dev_printk);
+ 
+ #define define_dev_printk_level(func, kern_level)               \
+ void func(const struct device *dev, const char *fmt, ...)       \
+ {                                                               \
+         struct va_format vaf;                                   \
+         va_list args;                                           \
+                                                                 \
+         va_start(args, fmt);                                    \
+                                                                 \
+         vaf.fmt = fmt;                                          \
+         vaf.va = &args;                                         \
+                                                                 \
+         __dev_printk(kern_level, dev, &vaf);                    \
+                                                                 \
+         va_end(args);                                           \
+ }                                                               \
+ EXPORT_SYMBOL(func);
+ 
+ define_dev_printk_level(dev_emerg, KERN_EMERG);
+ define_dev_printk_level(dev_alert, KERN_ALERT);
+ define_dev_printk_level(dev_crit, KERN_CRIT);
+ define_dev_printk_level(dev_err, KERN_ERR);
+ define_dev_printk_level(dev_warn, KERN_WARNING);
+ define_dev_printk_level(dev_notice, KERN_NOTICE);
+ define_dev_printk_level(_dev_info, KERN_INFO);
+ 
+ #endif
+ 
+ static inline bool fwnode_is_primary(struct fwnode_handle *fwnode)
+ {
+         return fwnode && !IS_ERR(fwnode->secondary);
+ }
+ 
+ /**
+  * set_primary_fwnode - Change the primary firmware node of a given device.
+  * @dev: Device to handle.
+  * @fwnode: New primary firmware node of the device.
+  *
+  * Set the device's firmware node pointer to @fwnode, but if a secondary
+  * firmware node of the device is present, preserve it.
+  */
+ void set_primary_fwnode(struct device *dev, struct fwnode_handle *fwnode)
+ {
+         if (fwnode) {
+                 struct fwnode_handle *fn = dev->fwnode;
+ 
+                 if (fwnode_is_primary(fn))
+                         fn = fn->secondary;
+ 
+                 fwnode->secondary = fn;
+                 dev->fwnode = fwnode;
+         } else {
+                 dev->fwnode = fwnode_is_primary(dev->fwnode) ?
+                         dev->fwnode->secondary : NULL;
+         }
+ }
+ EXPORT_SYMBOL_GPL(set_primary_fwnode);
+ 
+ /**
+  * set_secondary_fwnode - Change the secondary firmware node of a given device.
+  * @dev: Device to handle.
+  * @fwnode: New secondary firmware node of the device.
+  *
+  * If a primary firmware node of the device is present, set its secondary
+  * pointer to @fwnode.  Otherwise, set the device's firmware node pointer to
+  * @fwnode.
+  */
+ void set_secondary_fwnode(struct device *dev, struct fwnode_handle *fwnode)
+ {
+         if (fwnode)
+                 fwnode->secondary = ERR_PTR(-ENODEV);
+ 
+         if (fwnode_is_primary(dev->fwnode))
+                 dev->fwnode->secondary = fwnode;
+         else
+                 dev->fwnode = fwnode;
+ }
+ 
+```
+
+```
+/*
+ * net/sched/sch_generic.c      Generic packet scheduler routines.
+ *
+ *              This program is free software; you can redistribute it and/or
+ *              modify it under the terms of the GNU General Public License
+ *              as published by the Free Software Foundation; either version
+ *              2 of the License, or (at your option) any later version.
+ *
+ * Authors:     Alexey Kuznetsov, <kuznet@ms2.inr.ac.ru>
+ *              Jamal Hadi Salim, <hadi@cyberus.ca> 990601
+ *              - Ingress support
+ */
+
+#include <linux/bitops.h>
+#include <linux/module.h>
+#include <linux/types.h>
+#include <linux/kernel.h>
+#include <linux/sched.h>
+#include <linux/string.h>
+#include <linux/errno.h>
+#include <linux/netdevice.h>
+#include <linux/skbuff.h>
+#include <linux/rtnetlink.h>
+#include <linux/init.h>
+#include <linux/rcupdate.h>
+#include <linux/list.h>
+#include <linux/slab.h>
+#include <linux/if_vlan.h>
+#include <net/sch_generic.h>
+#include <net/pkt_sched.h>
+#include <net/dst.h>
+
+/* Qdisc to use by default */
+const struct Qdisc_ops *default_qdisc_ops = &pfifo_fast_ops;
+EXPORT_SYMBOL(default_qdisc_ops);
+
+/* Main transmission queue. */
+
+/* Modifications to data participating in scheduling must be protected with
+ * qdisc_lock(qdisc) spinlock.
+ *
+ * The idea is the following:
+ * - enqueue, dequeue are serialized via qdisc root lock
+ * - ingress filtering is also serialized via qdisc root lock
+ * - updates to tree and tree walking are only done under the rtnl mutex.
+ */
+
+static inline int dev_requeue_skb(struct sk_buff *skb, struct Qdisc *q)
+{
+        q->gso_skb = skb;
+        q->qstats.requeues++;
+        q->q.qlen++;    /* it's still part of the queue */
+        __netif_schedule(q);
+
+        return 0;
+}
+
+static void try_bulk_dequeue_skb(struct Qdisc *q,
+                                 struct sk_buff *skb,
+                                 const struct netdev_queue *txq,
+                                 int *packets)
+{
+        int bytelimit = qdisc_avail_bulklimit(txq) - skb->len;
+
+        while (bytelimit > 0) {
+                struct sk_buff *nskb = q->dequeue(q);
+
+                if (!nskb)
+                        break;
+
+                bytelimit -= nskb->len; /* covers GSO len */
+                skb->next = nskb;
+                skb = nskb;
+                (*packets)++; /* GSO counts as one pkt */
+        }
+        skb->next = NULL;
+}
+
+/* Note that dequeue_skb can possibly return a SKB list (via skb->next).
+ * A requeued skb (via q->gso_skb) can also be a SKB list.
+ */
+static struct sk_buff *dequeue_skb(struct Qdisc *q, bool *validate,
+                                   int *packets)
+{
+        struct sk_buff *skb = q->gso_skb;
+        const struct netdev_queue *txq = q->dev_queue;
+
+        *packets = 1;
+        *validate = true;
+        if (unlikely(skb)) {
+                /* check the reason of requeuing without tx lock first */
+                txq = skb_get_tx_queue(txq->dev, skb);
+                if (!netif_xmit_frozen_or_stopped(txq)) {
+                        q->gso_skb = NULL;
+                        q->q.qlen--;
+                } else
+                        skb = NULL;
+                /* skb in gso_skb were already validated */
+                *validate = false;
+        } else {
+                if (!(q->flags & TCQ_F_ONETXQUEUE) ||
+                    !netif_xmit_frozen_or_stopped(txq)) {
+                        skb = q->dequeue(q);
+                        if (skb && qdisc_may_bulk(q))
+                                try_bulk_dequeue_skb(q, skb, txq, packets);
+                }
+        }
+        return skb;
+}
+
+static inline int handle_dev_cpu_collision(struct sk_buff *skb,
+                                           struct netdev_queue *dev_queue,
+                                           struct Qdisc *q)
+{
+        int ret;
+
+        if (unlikely(dev_queue->xmit_lock_owner == smp_processor_id())) {
+                /*
+                 * Same CPU holding the lock. It may be a transient
+                 * configuration error, when hard_start_xmit() recurses. We
+                 * detect it by checking xmit owner and drop the packet when
+                 * deadloop is detected. Return OK to try the next skb.
+                 */
+                kfree_skb_list(skb);
+                net_warn_ratelimited("Dead loop on netdevice %s, fix it urgently!\n",
+                                     dev_queue->dev->name);
+                ret = qdisc_qlen(q);
+        } else {
+                /*
+                 * Another cpu is holding lock, requeue & delay xmits for
+                 * some time.
+                 */
+                __this_cpu_inc(softnet_data.cpu_collision);
+                ret = dev_requeue_skb(skb, q);
+        }
+
+        return ret;
+}
+
+/*
+ * Transmit possibly several skbs, and handle the return status as
+ * required. Holding the __QDISC___STATE_RUNNING bit guarantees that
+ * only one CPU can execute this function.
+ *
+ * Returns to the caller:
+ *                              0  - queue is empty or throttled.
+ *                              >0 - queue is not empty.
+ */
+int sch_direct_xmit(struct sk_buff *skb, struct Qdisc *q,
+                    struct net_device *dev, struct netdev_queue *txq,
+                    spinlock_t *root_lock, bool validate)
+{
+        int ret = NETDEV_TX_BUSY;
+
+        /* And release qdisc */
+        spin_unlock(root_lock);
+
+        /* Note that we validate skb (GSO, checksum, ...) outside of locks */
+        if (validate)
+                skb = validate_xmit_skb_list(skb, dev);
+
+        if (skb) {
+                HARD_TX_LOCK(dev, txq, smp_processor_id());
+                if (!netif_xmit_frozen_or_stopped(txq))
+                        skb = dev_hard_start_xmit(skb, dev, txq, &ret);
+
+                HARD_TX_UNLOCK(dev, txq);
+        }
+        spin_lock(root_lock);
+
+        if (dev_xmit_complete(ret)) {
+                /* Driver sent out skb successfully or skb was consumed */
+                ret = qdisc_qlen(q);
+        } else if (ret == NETDEV_TX_LOCKED) {
+                /* Driver try lock failed */
+                ret = handle_dev_cpu_collision(skb, txq, q);
+        } else {
+                /* Driver returned NETDEV_TX_BUSY - requeue skb */
+                if (unlikely(ret != NETDEV_TX_BUSY))
+                        net_warn_ratelimited("BUG %s code %d qlen %d\n",
+                                             dev->name, ret, q->q.qlen);
+
+                ret = dev_requeue_skb(skb, q);
+        }
+
+        if (ret && netif_xmit_frozen_or_stopped(txq))
+                ret = 0;
+
+        return ret;
+}
+
+/*
+ * NOTE: Called under qdisc_lock(q) with locally disabled BH.
+ *
+ * __QDISC___STATE_RUNNING guarantees only one CPU can process
+ * this qdisc at a time. qdisc_lock(q) serializes queue accesses for
+ * this queue.
+ *
+ *  netif_tx_lock serializes accesses to device driver.
+ *
+ *  qdisc_lock(q) and netif_tx_lock are mutually exclusive,
+ *  if one is grabbed, another must be free.
+ *
+ * Note, that this procedure can be called by a watchdog timer
+ *
+ * Returns to the caller:
+ *                              0  - queue is empty or throttled.
+ *                              >0 - queue is not empty.
+ *
+ */
+static inline int qdisc_restart(struct Qdisc *q, int *packets)
+{
+        struct netdev_queue *txq;
+        struct net_device *dev;
+        spinlock_t *root_lock;
+        struct sk_buff *skb;
+        bool validate;
+
+        /* Dequeue packet */
+        skb = dequeue_skb(q, &validate, packets);
+        if (unlikely(!skb))
+                return 0;
+
+        root_lock = qdisc_lock(q);
+        dev = qdisc_dev(q);
+        txq = skb_get_tx_queue(dev, skb);
+
+        return sch_direct_xmit(skb, q, dev, txq, root_lock, validate);
+}
+
+void __qdisc_run(struct Qdisc *q)
+{
+        int quota = weight_p;
+        int packets;
+
+        while (qdisc_restart(q, &packets)) {
+                /*
+                 * Ordered by possible occurrence: Postpone processing if
+                 * 1. we've exceeded packet quota
+                 * 2. another process needs the CPU;
+                 */
+                quota -= packets;
+                if (quota <= 0 || need_resched()) {
+                        __netif_schedule(q);
+                        break;
+                }
+        }
+
+        qdisc_run_end(q);
+}
+
+unsigned long dev_trans_start(struct net_device *dev)
+{
+        unsigned long val, res;
+        unsigned int i;
+
+        if (is_vlan_dev(dev))
+                dev = vlan_dev_real_dev(dev);
+        res = dev->trans_start;
+        for (i = 0; i < dev->num_tx_queues; i++) {
+                val = netdev_get_tx_queue(dev, i)->trans_start;
+                if (val && time_after(val, res))
+                        res = val;
+        }
+        dev->trans_start = res;
+
+        return res;
+}
+EXPORT_SYMBOL(dev_trans_start);
+
+static void dev_watchdog(unsigned long arg)
+{
+        struct net_device *dev = (struct net_device *)arg;
+
+        netif_tx_lock(dev);
+        if (!qdisc_tx_is_noop(dev)) {
+                if (netif_device_present(dev) &&
+                    netif_running(dev) &&
+                    netif_carrier_ok(dev)) {
+                        int some_queue_timedout = 0;
+                        unsigned int i;
+                        unsigned long trans_start;
+
+                        for (i = 0; i < dev->num_tx_queues; i++) {
+                                struct netdev_queue *txq;
+
+                                txq = netdev_get_tx_queue(dev, i);
+                                /*
+                                 * old device drivers set dev->trans_start
+                                 */
+                                trans_start = txq->trans_start ? : dev->trans_start;
+                                if (netif_xmit_stopped(txq) &&
+                                    time_after(jiffies, (trans_start +
+                                                         dev->watchdog_timeo))) {
+                                        some_queue_timedout = 1;
+                                        txq->trans_timeout++;
+                                        break;
+                                }
+                        }
+
+                        if (some_queue_timedout) {
+                                WARN_ONCE(1, KERN_INFO "NETDEV WATCHDOG: %s (%s): transmit queue %u timed out\n",
+                                       dev->name, netdev_drivername(dev), i);
+                                dev->netdev_ops->ndo_tx_timeout(dev);
+                        }
+                        if (!mod_timer(&dev->watchdog_timer,
+                                       round_jiffies(jiffies +
+                                                     dev->watchdog_timeo)))
+                                dev_hold(dev);
+                }
+        }
+        netif_tx_unlock(dev);
+
+        dev_put(dev);
+}
+
+void __netdev_watchdog_up(struct net_device *dev)
+{
+        if (dev->netdev_ops->ndo_tx_timeout) {
+                if (dev->watchdog_timeo <= 0)
+                        dev->watchdog_timeo = 5*HZ;
+                if (!mod_timer(&dev->watchdog_timer,
+                               round_jiffies(jiffies + dev->watchdog_timeo)))
+                        dev_hold(dev);
+        }
+}
+
+static void dev_watchdog_up(struct net_device *dev)
+{
+        __netdev_watchdog_up(dev);
+}
+
+static void dev_watchdog_down(struct net_device *dev)
+{
+        netif_tx_lock_bh(dev);
+        if (del_timer(&dev->watchdog_timer))
+                dev_put(dev);
+        netif_tx_unlock_bh(dev);
+}
+
+/**
+ *      netif_carrier_on - set carrier
+ *      @dev: network device
+ *
+ * Device has detected that carrier.
+ */
+void netif_carrier_on(struct net_device *dev)
+{
+        if (test_and_clear_bit(__LINK_STATE_NOCARRIER, &dev->state)) {
+                if (dev->reg_state == NETREG_UNINITIALIZED)
+                        return;
+                atomic_inc(&dev->carrier_changes);
+                linkwatch_fire_event(dev);
+                if (netif_running(dev))
+                        __netdev_watchdog_up(dev);
+        }
+}
+EXPORT_SYMBOL(netif_carrier_on);
+
+/**
+ *      netif_carrier_off - clear carrier
+ *      @dev: network device
+ *
+ * Device has detected loss of carrier.
+ */
+void netif_carrier_off(struct net_device *dev)
+{
+        if (!test_and_set_bit(__LINK_STATE_NOCARRIER, &dev->state)) {
+                if (dev->reg_state == NETREG_UNINITIALIZED)
+                        return;
+                atomic_inc(&dev->carrier_changes);
+                linkwatch_fire_event(dev);
+        }
+}
+EXPORT_SYMBOL(netif_carrier_off);
+
+/* "NOOP" scheduler: the best scheduler, recommended for all interfaces
+   under all circumstances. It is difficult to invent anything faster or
+   cheaper.
+ */
+
+static int noop_enqueue(struct sk_buff *skb, struct Qdisc *qdisc)
+{
+        kfree_skb(skb);
+        return NET_XMIT_CN;
+}
+
+static struct sk_buff *noop_dequeue(struct Qdisc *qdisc)
+{
+        return NULL;
+}
+
+struct Qdisc_ops noop_qdisc_ops __read_mostly = {
+        .id             =       "noop",
+        .priv_size      =       0,
+        .enqueue        =       noop_enqueue,
+        .dequeue        =       noop_dequeue,
+        .peek           =       noop_dequeue,
+        .owner          =       THIS_MODULE,
+};
+
+static struct netdev_queue noop_netdev_queue = {
+        .qdisc          =       &noop_qdisc,
+        .qdisc_sleeping =       &noop_qdisc,
+};
+
+struct Qdisc noop_qdisc = {
+        .enqueue        =       noop_enqueue,
+        .dequeue        =       noop_dequeue,
+        .flags          =       TCQ_F_BUILTIN,
+        .ops            =       &noop_qdisc_ops,
+        .list           =       LIST_HEAD_INIT(noop_qdisc.list),
+        .q.lock         =       __SPIN_LOCK_UNLOCKED(noop_qdisc.q.lock),
+        .dev_queue      =       &noop_netdev_queue,
+        .busylock       =       __SPIN_LOCK_UNLOCKED(noop_qdisc.busylock),
+};
+EXPORT_SYMBOL(noop_qdisc);
+
+static struct Qdisc_ops noqueue_qdisc_ops __read_mostly = {
+        .id             =       "noqueue",
+        .priv_size      =       0,
+        .enqueue        =       noop_enqueue,
+        .dequeue        =       noop_dequeue,
+        .peek           =       noop_dequeue,
+        .owner          =       THIS_MODULE,
+};
+
+static struct Qdisc noqueue_qdisc;
+static struct netdev_queue noqueue_netdev_queue = {
+        .qdisc          =       &noqueue_qdisc,
+        .qdisc_sleeping =       &noqueue_qdisc,
+};
+
+static struct Qdisc noqueue_qdisc = {
+        .enqueue        =       NULL,
+        .dequeue        =       noop_dequeue,
+        .flags          =       TCQ_F_BUILTIN,
+        .ops            =       &noqueue_qdisc_ops,
+        .list           =       LIST_HEAD_INIT(noqueue_qdisc.list),
+        .q.lock         =       __SPIN_LOCK_UNLOCKED(noqueue_qdisc.q.lock),
+        .dev_queue      =       &noqueue_netdev_queue,
+        .busylock       =       __SPIN_LOCK_UNLOCKED(noqueue_qdisc.busylock),
+};
+
+
+static const u8 prio2band[TC_PRIO_MAX + 1] = {
+        1, 2, 2, 2, 1, 2, 0, 0 , 1, 1, 1, 1, 1, 1, 1, 1
+};
+
+/* 3-band FIFO queue: old style, but should be a bit faster than
+   generic prio+fifo combination.
+ */
+
+#define PFIFO_FAST_BANDS 3
+
+/*
+ * Private data for a pfifo_fast scheduler containing:
+ *      - queues for the three band
+ *      - bitmap indicating which of the bands contain skbs
+ */
+struct pfifo_fast_priv {
+        u32 bitmap;
+        struct sk_buff_head q[PFIFO_FAST_BANDS];
+};
+
+/*
+ * Convert a bitmap to the first band number where an skb is queued, where:
+ *      bitmap=0 means there are no skbs on any band.
+ *      bitmap=1 means there is an skb on band 0.
+ *      bitmap=7 means there are skbs on all 3 bands, etc.
+ */
+static const int bitmap2band[] = {-1, 0, 1, 0, 2, 0, 1, 0};
+
+static inline struct sk_buff_head *band2list(struct pfifo_fast_priv *priv,
+                                             int band)
+{
+        return priv->q + band;
+}
+
+static int pfifo_fast_enqueue(struct sk_buff *skb, struct Qdisc *qdisc)
+{
+        if (skb_queue_len(&qdisc->q) < qdisc_dev(qdisc)->tx_queue_len) {
+                int band = prio2band[skb->priority & TC_PRIO_MAX];
+                struct pfifo_fast_priv *priv = qdisc_priv(qdisc);
+                struct sk_buff_head *list = band2list(priv, band);
+
+                priv->bitmap |= (1 << band);
+                qdisc->q.qlen++;
+                return __qdisc_enqueue_tail(skb, qdisc, list);
+        }
+
+        return qdisc_drop(skb, qdisc);
+}
+
+static struct sk_buff *pfifo_fast_dequeue(struct Qdisc *qdisc)
+{
+        struct pfifo_fast_priv *priv = qdisc_priv(qdisc);
+        int band = bitmap2band[priv->bitmap];
+
+        if (likely(band >= 0)) {
+                struct sk_buff_head *list = band2list(priv, band);
+                struct sk_buff *skb = __qdisc_dequeue_head(qdisc, list);
+
+                qdisc->q.qlen--;
+                if (skb_queue_empty(list))
+                        priv->bitmap &= ~(1 << band);
+
+                return skb;
+        }
+
+        return NULL;
+}
+
+static struct sk_buff *pfifo_fast_peek(struct Qdisc *qdisc)
+{
+        struct pfifo_fast_priv *priv = qdisc_priv(qdisc);
+        int band = bitmap2band[priv->bitmap];
+
+        if (band >= 0) {
+                struct sk_buff_head *list = band2list(priv, band);
+
+                return skb_peek(list);
+        }
+
+        return NULL;
+}
+
+static void pfifo_fast_reset(struct Qdisc *qdisc)
+{
+        int prio;
+        struct pfifo_fast_priv *priv = qdisc_priv(qdisc);
+
+        for (prio = 0; prio < PFIFO_FAST_BANDS; prio++)
+                __qdisc_reset_queue(qdisc, band2list(priv, prio));
+
+        priv->bitmap = 0;
+        qdisc->qstats.backlog = 0;
+        qdisc->q.qlen = 0;
+}
+
+static int pfifo_fast_dump(struct Qdisc *qdisc, struct sk_buff *skb)
+{
+        struct tc_prio_qopt opt = { .bands = PFIFO_FAST_BANDS };
+
+        memcpy(&opt.priomap, prio2band, TC_PRIO_MAX + 1);
+        if (nla_put(skb, TCA_OPTIONS, sizeof(opt), &opt))
+                goto nla_put_failure;
+        return skb->len;
+
+nla_put_failure:
+        return -1;
+}
+
+static int pfifo_fast_init(struct Qdisc *qdisc, struct nlattr *opt)
+{
+        int prio;
+        struct pfifo_fast_priv *priv = qdisc_priv(qdisc);
+
+        for (prio = 0; prio < PFIFO_FAST_BANDS; prio++)
+                __skb_queue_head_init(band2list(priv, prio));
+
+        /* Can by-pass the queue discipline */
+        qdisc->flags |= TCQ_F_CAN_BYPASS;
+        return 0;
+}
+
+struct Qdisc_ops pfifo_fast_ops __read_mostly = {
+        .id             =       "pfifo_fast",
+        .priv_size      =       sizeof(struct pfifo_fast_priv),
+        .enqueue        =       pfifo_fast_enqueue,
+        .dequeue        =       pfifo_fast_dequeue,
+        .peek           =       pfifo_fast_peek,
+        .init           =       pfifo_fast_init,
+        .reset          =       pfifo_fast_reset,
+        .dump           =       pfifo_fast_dump,
+        .owner          =       THIS_MODULE,
+};
+
+static struct lock_class_key qdisc_tx_busylock;
+
+struct Qdisc *qdisc_alloc(struct netdev_queue *dev_queue,
+                          const struct Qdisc_ops *ops)
+{
+        void *p;
+        struct Qdisc *sch;
+        unsigned int size = QDISC_ALIGN(sizeof(*sch)) + ops->priv_size;
+        int err = -ENOBUFS;
+        struct net_device *dev = dev_queue->dev;
+
+        p = kzalloc_node(size, GFP_KERNEL,
+                         netdev_queue_numa_node_read(dev_queue));
+
+        if (!p)
+                goto errout;
+        sch = (struct Qdisc *) QDISC_ALIGN((unsigned long) p);
+        /* if we got non aligned memory, ask more and do alignment ourself */
+        if (sch != p) {
+                kfree(p);
+                p = kzalloc_node(size + QDISC_ALIGNTO - 1, GFP_KERNEL,
+                                 netdev_queue_numa_node_read(dev_queue));
+                if (!p)
+                        goto errout;
+                sch = (struct Qdisc *) QDISC_ALIGN((unsigned long) p);
+                sch->padded = (char *) sch - (char *) p;
+        }
+        INIT_LIST_HEAD(&sch->list);
+        skb_queue_head_init(&sch->q);
+
+        spin_lock_init(&sch->busylock);
+        lockdep_set_class(&sch->busylock,
+                          dev->qdisc_tx_busylock ?: &qdisc_tx_busylock);
+
+        sch->ops = ops;
+        sch->enqueue = ops->enqueue;
+        sch->dequeue = ops->dequeue;
+        sch->dev_queue = dev_queue;
+        dev_hold(dev);
+        atomic_set(&sch->refcnt, 1);
+
+        return sch;
+errout:
+        return ERR_PTR(err);
+}
+
+struct Qdisc *qdisc_create_dflt(struct netdev_queue *dev_queue,
+                                const struct Qdisc_ops *ops,
+                                unsigned int parentid)
+{
+        struct Qdisc *sch;
+
+        if (!try_module_get(ops->owner))
+                goto errout;
+
+        sch = qdisc_alloc(dev_queue, ops);
+        if (IS_ERR(sch))
+                goto errout;
+        sch->parent = parentid;
+
+        if (!ops->init || ops->init(sch, NULL) == 0)
+                return sch;
+
+        qdisc_destroy(sch);
+errout:
+        return NULL;
+}
+EXPORT_SYMBOL(qdisc_create_dflt);
+
+/* Under qdisc_lock(qdisc) and BH! */
+
+void qdisc_reset(struct Qdisc *qdisc)
+{
+        const struct Qdisc_ops *ops = qdisc->ops;
+
+        if (ops->reset)
+                ops->reset(qdisc);
+
+        if (qdisc->gso_skb) {
+                kfree_skb_list(qdisc->gso_skb);
+                qdisc->gso_skb = NULL;
+                qdisc->q.qlen = 0;
+        }
+}
+EXPORT_SYMBOL(qdisc_reset);
+
+static void qdisc_rcu_free(struct rcu_head *head)
+{
+        struct Qdisc *qdisc = container_of(head, struct Qdisc, rcu_head);
+
+        if (qdisc_is_percpu_stats(qdisc))
+                free_percpu(qdisc->cpu_bstats);
+
+        kfree((char *) qdisc - qdisc->padded);
+}
+
+void qdisc_destroy(struct Qdisc *qdisc)
+{
+        const struct Qdisc_ops  *ops = qdisc->ops;
+
+        if (qdisc->flags & TCQ_F_BUILTIN ||
+            !atomic_dec_and_test(&qdisc->refcnt))
+                return;
+
+#ifdef CONFIG_NET_SCHED
+        qdisc_list_del(qdisc);
+
+        qdisc_put_stab(rtnl_dereference(qdisc->stab));
+#endif
+        gen_kill_estimator(&qdisc->bstats, &qdisc->rate_est);
+        if (ops->reset)
+                ops->reset(qdisc);
+        if (ops->destroy)
+                ops->destroy(qdisc);
+
+        module_put(ops->owner);
+        dev_put(qdisc_dev(qdisc));
+
+        kfree_skb_list(qdisc->gso_skb);
+        /*
+         * gen_estimator est_timer() might access qdisc->q.lock,
+         * wait a RCU grace period before freeing qdisc.
+         */
+        call_rcu(&qdisc->rcu_head, qdisc_rcu_free);
+}
+EXPORT_SYMBOL(qdisc_destroy);
+
+/* Attach toplevel qdisc to device queue. */
+struct Qdisc *dev_graft_qdisc(struct netdev_queue *dev_queue,
+                              struct Qdisc *qdisc)
+{
+        struct Qdisc *oqdisc = dev_queue->qdisc_sleeping;
+        spinlock_t *root_lock;
+
+        root_lock = qdisc_lock(oqdisc);
+        spin_lock_bh(root_lock);
+
+        /* Prune old scheduler */
+        if (oqdisc && atomic_read(&oqdisc->refcnt) <= 1)
+                qdisc_reset(oqdisc);
+
+        /* ... and graft new one */
+        if (qdisc == NULL)
+                qdisc = &noop_qdisc;
+        dev_queue->qdisc_sleeping = qdisc;
+        rcu_assign_pointer(dev_queue->qdisc, &noop_qdisc);
+
+        spin_unlock_bh(root_lock);
+
+        return oqdisc;
+}
+EXPORT_SYMBOL(dev_graft_qdisc);
+
+static void attach_one_default_qdisc(struct net_device *dev,
+                                     struct netdev_queue *dev_queue,
+                                     void *_unused)
+{
+        struct Qdisc *qdisc = &noqueue_qdisc;
+
+        if (dev->tx_queue_len) {
+                qdisc = qdisc_create_dflt(dev_queue,
+                                          default_qdisc_ops, TC_H_ROOT);
+                if (!qdisc) {
+                        netdev_info(dev, "activation failed\n");
+                        return;
+                }
+                if (!netif_is_multiqueue(dev))
+                        qdisc->flags |= TCQ_F_ONETXQUEUE;
+        }
+        dev_queue->qdisc_sleeping = qdisc;
+}
+
+static void attach_default_qdiscs(struct net_device *dev)
+{
+        struct netdev_queue *txq;
+        struct Qdisc *qdisc;
+
+        txq = netdev_get_tx_queue(dev, 0);
+
+        if (!netif_is_multiqueue(dev) || dev->tx_queue_len == 0) {
+                netdev_for_each_tx_queue(dev, attach_one_default_qdisc, NULL);
+                dev->qdisc = txq->qdisc_sleeping;
+                atomic_inc(&dev->qdisc->refcnt);
+        } else {
+                qdisc = qdisc_create_dflt(txq, &mq_qdisc_ops, TC_H_ROOT);
+                if (qdisc) {
+                        dev->qdisc = qdisc;
+                        qdisc->ops->attach(qdisc);
+                }
+        }
+}
+
+static void transition_one_qdisc(struct net_device *dev,
+                                 struct netdev_queue *dev_queue,
+                                 void *_need_watchdog)
+{
+        struct Qdisc *new_qdisc = dev_queue->qdisc_sleeping;
+        int *need_watchdog_p = _need_watchdog;
+
+        if (!(new_qdisc->flags & TCQ_F_BUILTIN))
+                clear_bit(__QDISC_STATE_DEACTIVATED, &new_qdisc->state);
+
+        rcu_assign_pointer(dev_queue->qdisc, new_qdisc);
+        if (need_watchdog_p && new_qdisc != &noqueue_qdisc) {
+                dev_queue->trans_start = 0;
+                *need_watchdog_p = 1;
+        }
+}
+
+void dev_activate(struct net_device *dev)
+{
+        int need_watchdog;
+
+        /* No queueing discipline is attached to device;
+         * create default one for devices, which need queueing
+         * and noqueue_qdisc for virtual interfaces
+         */
+
+        if (dev->qdisc == &noop_qdisc)
+                attach_default_qdiscs(dev);
+
+        if (!netif_carrier_ok(dev))
+                /* Delay activation until next carrier-on event */
+                return;
+
+        need_watchdog = 0;
+        netdev_for_each_tx_queue(dev, transition_one_qdisc, &need_watchdog);
+        if (dev_ingress_queue(dev))
+                transition_one_qdisc(dev, dev_ingress_queue(dev), NULL);
+
+        if (need_watchdog) {
+                dev->trans_start = jiffies;
+                dev_watchdog_up(dev);
+        }
+}
+EXPORT_SYMBOL(dev_activate);
+
+static void dev_deactivate_queue(struct net_device *dev,
+                                 struct netdev_queue *dev_queue,
+                                 void *_qdisc_default)
+{
+        struct Qdisc *qdisc_default = _qdisc_default;
+        struct Qdisc *qdisc;
+
+        qdisc = rtnl_dereference(dev_queue->qdisc);
+        if (qdisc) {
+                spin_lock_bh(qdisc_lock(qdisc));
+
+                if (!(qdisc->flags & TCQ_F_BUILTIN))
+                        set_bit(__QDISC_STATE_DEACTIVATED, &qdisc->state);
+
+                rcu_assign_pointer(dev_queue->qdisc, qdisc_default);
+                qdisc_reset(qdisc);
+
+                spin_unlock_bh(qdisc_lock(qdisc));
+        }
+}
+
+static bool some_qdisc_is_busy(struct net_device *dev)
+{
+        unsigned int i;
+
+        for (i = 0; i < dev->num_tx_queues; i++) {
+                struct netdev_queue *dev_queue;
+                spinlock_t *root_lock;
+                struct Qdisc *q;
+                int val;
+
+                dev_queue = netdev_get_tx_queue(dev, i);
+                q = dev_queue->qdisc_sleeping;
+                root_lock = qdisc_lock(q);
+
+                spin_lock_bh(root_lock);
+
+                val = (qdisc_is_running(q) ||
+                       test_bit(__QDISC_STATE_SCHED, &q->state));
+
+                spin_unlock_bh(root_lock);
+
+                if (val)
+                        return true;
+        }
+        return false;
+}
+
+/**
+ *      dev_deactivate_many - deactivate transmissions on several devices
+ *      @head: list of devices to deactivate
+ *
+ *      This function returns only when all outstanding transmissions
+ *      have completed, unless all devices are in dismantle phase.
+ */
+void dev_deactivate_many(struct list_head *head)
+{
+        struct net_device *dev;
+        bool sync_needed = false;
+
+        list_for_each_entry(dev, head, close_list) {
+                netdev_for_each_tx_queue(dev, dev_deactivate_queue,
+                                         &noop_qdisc);
+                if (dev_ingress_queue(dev))
+                        dev_deactivate_queue(dev, dev_ingress_queue(dev),
+                                             &noop_qdisc);
+
+                dev_watchdog_down(dev);
+                sync_needed |= !dev->dismantle;
+        }
+
+        /* Wait for outstanding qdisc-less dev_queue_xmit calls.
+         * This is avoided if all devices are in dismantle phase :
+         * Caller will call synchronize_net() for us
+         */
+        if (sync_needed)
+                synchronize_net();
+
+        /* Wait for outstanding qdisc_run calls. */
+        list_for_each_entry(dev, head, close_list)
+                while (some_qdisc_is_busy(dev))
+                        yield();
+}
+
+void dev_deactivate(struct net_device *dev)
+{
+        LIST_HEAD(single);
+
+        list_add(&dev->close_list, &single);
+        dev_deactivate_many(&single);
+        list_del(&single);
+}
+EXPORT_SYMBOL(dev_deactivate);
+
+static void dev_init_scheduler_queue(struct net_device *dev,
+                                     struct netdev_queue *dev_queue,
+                                     void *_qdisc)
+{
+        struct Qdisc *qdisc = _qdisc;
+
+        rcu_assign_pointer(dev_queue->qdisc, qdisc);
+        dev_queue->qdisc_sleeping = qdisc;
+}
+
+void dev_init_scheduler(struct net_device *dev)
+{
+        dev->qdisc = &noop_qdisc;
+        netdev_for_each_tx_queue(dev, dev_init_scheduler_queue, &noop_qdisc);
+        if (dev_ingress_queue(dev))
+                dev_init_scheduler_queue(dev, dev_ingress_queue(dev), &noop_qdisc);
+
+        setup_timer(&dev->watchdog_timer, dev_watchdog, (unsigned long)dev);
+}
+
+static void shutdown_scheduler_queue(struct net_device *dev,
+                                     struct netdev_queue *dev_queue,
+                                     void *_qdisc_default)
+{
+        struct Qdisc *qdisc = dev_queue->qdisc_sleeping;
+        struct Qdisc *qdisc_default = _qdisc_default;
+
+        if (qdisc) {
+                rcu_assign_pointer(dev_queue->qdisc, qdisc_default);
+                dev_queue->qdisc_sleeping = qdisc_default;
+
+                qdisc_destroy(qdisc);
+        }
+}
+
+void dev_shutdown(struct net_device *dev)
+{
+        netdev_for_each_tx_queue(dev, shutdown_scheduler_queue, &noop_qdisc);
+        if (dev_ingress_queue(dev))
+                shutdown_scheduler_queue(dev, dev_ingress_queue(dev), &noop_qdisc);
+        qdisc_destroy(dev->qdisc);
+        dev->qdisc = &noop_qdisc;
+
+        WARN_ON(timer_pending(&dev->watchdog_timer));
+}
+
+void psched_ratecfg_precompute(struct psched_ratecfg *r,
+                               const struct tc_ratespec *conf,
+                               u64 rate64)
+{
+        memset(r, 0, sizeof(*r));
+        r->overhead = conf->overhead;
+        r->rate_bytes_ps = max_t(u64, conf->rate, rate64);
+        r->linklayer = (conf->linklayer & TC_LINKLAYER_MASK);
+        r->mult = 1;
+        /*
+         * The deal here is to replace a divide by a reciprocal one
+         * in fast path (a reciprocal divide is a multiply and a shift)
+         *
+         * Normal formula would be :
+         *  time_in_ns = (NSEC_PER_SEC * len) / rate_bps
+         *
+         * We compute mult/shift to use instead :
+         *  time_in_ns = (len * mult) >> shift;
+         *
+         * We try to get the highest possible mult value for accuracy,
+         * but have to make sure no overflows will ever happen.
+         */
+        if (r->rate_bytes_ps > 0) {
+                u64 factor = NSEC_PER_SEC;
+
+                for (;;) {
+                        r->mult = div64_u64(factor, r->rate_bytes_ps);
+                        if (r->mult & (1U << 31) || factor & (1ULL << 63))
+                                break;
+                        factor <<= 1;
+                        r->shift++;
+                }
+        }
+}
+EXPORT_SYMBOL(psched_ratecfg_precompute);
+
+```
+
+```
+	Linux/include/net/sch_generic.h
+
+#ifndef __NET_SCHED_GENERIC_H
+#define __NET_SCHED_GENERIC_H
+
+#include <linux/netdevice.h>
+#include <linux/types.h>
+#include <linux/rcupdate.h>
+#include <linux/pkt_sched.h>
+#include <linux/pkt_cls.h>
+#include <linux/percpu.h>
+#include <linux/dynamic_queue_limits.h>
+#include <net/gen_stats.h>
+#include <net/rtnetlink.h>
+
+struct Qdisc_ops;
+struct qdisc_walker;
+struct tcf_walker;
+struct module;
+
+struct qdisc_rate_table {
+        struct tc_ratespec rate;
+        u32             data[256];
+        struct qdisc_rate_table *next;
+        int             refcnt;
+};
+
+enum qdisc_state_t {
+        __QDISC_STATE_SCHED,
+        __QDISC_STATE_DEACTIVATED,
+        __QDISC_STATE_THROTTLED,
+};
+
+/*
+ * following bits are only changed while qdisc lock is held
+ */
+enum qdisc___state_t {
+        __QDISC___STATE_RUNNING = 1,
+};
+
+struct qdisc_size_table {
+        struct rcu_head         rcu;
+        struct list_head        list;
+        struct tc_sizespec      szopts;
+        int                     refcnt;
+        u16                     data[];
+};
+
+struct Qdisc {
+        int                     (*enqueue)(struct sk_buff *skb, struct Qdisc *dev);
+        struct sk_buff *        (*dequeue)(struct Qdisc *dev);
+        unsigned int            flags;
+#define TCQ_F_BUILTIN           1
+#define TCQ_F_INGRESS           2
+#define TCQ_F_CAN_BYPASS        4
+#define TCQ_F_MQROOT            8
+#define TCQ_F_ONETXQUEUE        0x10 /* dequeue_skb() can assume all skbs are for
+                                      * q->dev_queue : It can test
+                                      * netif_xmit_frozen_or_stopped() before
+                                      * dequeueing next packet.
+                                      * Its true for MQ/MQPRIO slaves, or non
+                                      * multiqueue device.
+                                      */
+#define TCQ_F_WARN_NONWC        (1 << 16)
+#define TCQ_F_CPUSTATS          0x20 /* run using percpu statistics */
+        u32                     limit;
+        const struct Qdisc_ops  *ops;
+        struct qdisc_size_table __rcu *stab;
+        struct list_head        list;
+        u32                     handle;
+        u32                     parent;
+        int                     (*reshape_fail)(struct sk_buff *skb,
+                                        struct Qdisc *q);
+
+        void                    *u32_node;
+
+        /* This field is deprecated, but it is still used by CBQ
+         * and it will live until better solution will be invented.
+         */
+        struct Qdisc            *__parent;
+        struct netdev_queue     *dev_queue;
+
+        struct gnet_stats_rate_est64    rate_est;
+        struct gnet_stats_basic_cpu __percpu *cpu_bstats;
+        struct gnet_stats_queue __percpu *cpu_qstats;
+
+        struct Qdisc            *next_sched;
+        struct sk_buff          *gso_skb;
+        /*
+         * For performance sake on SMP, we put highly modified fields at the end
+         */
+        unsigned long           state;
+        struct sk_buff_head     q;
+        struct gnet_stats_basic_packed bstats;
+        unsigned int            __state;
+        struct gnet_stats_queue qstats;
+        struct rcu_head         rcu_head;
+        int                     padded;
+        atomic_t                refcnt;
+
+        spinlock_t              busylock ____cacheline_aligned_in_smp;
+};
+
+static inline bool qdisc_is_running(const struct Qdisc *qdisc)
+{
+        return (qdisc->__state & __QDISC___STATE_RUNNING) ? true : false;
+}
+
+static inline bool qdisc_run_begin(struct Qdisc *qdisc)
+{
+        if (qdisc_is_running(qdisc))
+                return false;
+        qdisc->__state |= __QDISC___STATE_RUNNING;
+        return true;
+}
+
+static inline void qdisc_run_end(struct Qdisc *qdisc)
+{
+        qdisc->__state &= ~__QDISC___STATE_RUNNING;
+}
+
+static inline bool qdisc_may_bulk(const struct Qdisc *qdisc)
+{
+        return qdisc->flags & TCQ_F_ONETXQUEUE;
+}
+
+static inline int qdisc_avail_bulklimit(const struct netdev_queue *txq)
+{
+#ifdef CONFIG_BQL
+        /* Non-BQL migrated drivers will return 0, too. */
+        return dql_avail(&txq->dql);
+#else
+        return 0;
+#endif
+}
+
+static inline bool qdisc_is_throttled(const struct Qdisc *qdisc)
+{
+        return test_bit(__QDISC_STATE_THROTTLED, &qdisc->state) ? true : false;
+}
+
+static inline void qdisc_throttled(struct Qdisc *qdisc)
+{
+        set_bit(__QDISC_STATE_THROTTLED, &qdisc->state);
+}
+
+static inline void qdisc_unthrottled(struct Qdisc *qdisc)
+{
+        clear_bit(__QDISC_STATE_THROTTLED, &qdisc->state);
+}
+
+struct Qdisc_class_ops {
+        /* Child qdisc manipulation */
+        struct netdev_queue *   (*select_queue)(struct Qdisc *, struct tcmsg *);
+        int                     (*graft)(struct Qdisc *, unsigned long cl,
+                                        struct Qdisc *, struct Qdisc **);
+        struct Qdisc *          (*leaf)(struct Qdisc *, unsigned long cl);
+        void                    (*qlen_notify)(struct Qdisc *, unsigned long);
+
+        /* Class manipulation routines */
+        unsigned long           (*get)(struct Qdisc *, u32 classid);
+        void                    (*put)(struct Qdisc *, unsigned long);
+        int                     (*change)(struct Qdisc *, u32, u32,
+                                        struct nlattr **, unsigned long *);
+        int                     (*delete)(struct Qdisc *, unsigned long);
+        void                    (*walk)(struct Qdisc *, struct qdisc_walker * arg);
+
+        /* Filter manipulation */
+        struct tcf_proto __rcu ** (*tcf_chain)(struct Qdisc *, unsigned long);
+        unsigned long           (*bind_tcf)(struct Qdisc *, unsigned long,
+                                        u32 classid);
+        void                    (*unbind_tcf)(struct Qdisc *, unsigned long);
+
+        /* rtnetlink specific */
+        int                     (*dump)(struct Qdisc *, unsigned long,
+                                        struct sk_buff *skb, struct tcmsg*);
+        int                     (*dump_stats)(struct Qdisc *, unsigned long,
+                                        struct gnet_dump *);
+};
+
+struct Qdisc_ops {
+        struct Qdisc_ops        *next;
+        const struct Qdisc_class_ops    *cl_ops;
+        char                    id[IFNAMSIZ];
+        int                     priv_size;
+
+        int                     (*enqueue)(struct sk_buff *, struct Qdisc *);
+        struct sk_buff *        (*dequeue)(struct Qdisc *);
+        struct sk_buff *        (*peek)(struct Qdisc *);
+        unsigned int            (*drop)(struct Qdisc *);
+
+        int                     (*init)(struct Qdisc *, struct nlattr *arg);
+        void                    (*reset)(struct Qdisc *);
+        void                    (*destroy)(struct Qdisc *);
+        int                     (*change)(struct Qdisc *, struct nlattr *arg);
+        void                    (*attach)(struct Qdisc *);
+
+        int                     (*dump)(struct Qdisc *, struct sk_buff *);
+        int                     (*dump_stats)(struct Qdisc *, struct gnet_dump *);
+
+        struct module           *owner;
+};
+
+
+struct tcf_result {
+        unsigned long   class;
+        u32             classid;
+};
+
+struct tcf_proto_ops {
+        struct list_head        head;
+        char                    kind[IFNAMSIZ];
+
+        int                     (*classify)(struct sk_buff *,
+                                            const struct tcf_proto *,
+                                            struct tcf_result *);
+        int                     (*init)(struct tcf_proto*);
+        bool                    (*destroy)(struct tcf_proto*, bool);
+
+        unsigned long           (*get)(struct tcf_proto*, u32 handle);
+        int                     (*change)(struct net *net, struct sk_buff *,
+                                        struct tcf_proto*, unsigned long,
+                                        u32 handle, struct nlattr **,
+                                        unsigned long *, bool);
+        int                     (*delete)(struct tcf_proto*, unsigned long);
+        void                    (*walk)(struct tcf_proto*, struct tcf_walker *arg);
+
+        /* rtnetlink specific */
+        int                     (*dump)(struct net*, struct tcf_proto*, unsigned long,
+                                        struct sk_buff *skb, struct tcmsg*);
+
+        struct module           *owner;
+};
+
+struct tcf_proto {
+        /* Fast access part */
+        struct tcf_proto __rcu  *next;
+        void __rcu              *root;
+        int                     (*classify)(struct sk_buff *,
+                                            const struct tcf_proto *,
+                                            struct tcf_result *);
+        __be16                  protocol;
+
+        /* All the rest */
+        u32                     prio;
+        u32                     classid;
+        struct Qdisc            *q;
+        void                    *data;
+        const struct tcf_proto_ops      *ops;
+        struct rcu_head         rcu;
+};
+
+struct qdisc_skb_cb {
+        unsigned int            pkt_len;
+        u16                     slave_dev_queue_mapping;
+        u16                     _pad;
+#define QDISC_CB_PRIV_LEN 20
+        unsigned char           data[QDISC_CB_PRIV_LEN];
+};
+
+static inline void qdisc_cb_private_validate(const struct sk_buff *skb, int sz)
+{
+        struct qdisc_skb_cb *qcb;
+
+        BUILD_BUG_ON(sizeof(skb->cb) < offsetof(struct qdisc_skb_cb, data) + sz);
+        BUILD_BUG_ON(sizeof(qcb->data) < sz);
+}
+
+static inline int qdisc_qlen(const struct Qdisc *q)
+{
+        return q->q.qlen;
+}
+
+static inline struct qdisc_skb_cb *qdisc_skb_cb(const struct sk_buff *skb)
+{
+        return (struct qdisc_skb_cb *)skb->cb;
+}
+
+static inline spinlock_t *qdisc_lock(struct Qdisc *qdisc)
+{
+        return &qdisc->q.lock;
+}
+
+static inline struct Qdisc *qdisc_root(const struct Qdisc *qdisc)
+{
+        struct Qdisc *q = rcu_dereference_rtnl(qdisc->dev_queue->qdisc);
+
+        return q;
+}
+
+static inline struct Qdisc *qdisc_root_sleeping(const struct Qdisc *qdisc)
+{
+        return qdisc->dev_queue->qdisc_sleeping;
+}
+
+/* The qdisc root lock is a mechanism by which to top level
+ * of a qdisc tree can be locked from any qdisc node in the
+ * forest.  This allows changing the configuration of some
+ * aspect of the qdisc tree while blocking out asynchronous
+ * qdisc access in the packet processing paths.
+ *
+ * It is only legal to do this when the root will not change
+ * on us.  Otherwise we'll potentially lock the wrong qdisc
+ * root.  This is enforced by holding the RTNL semaphore, which
+ * all users of this lock accessor must do.
+ */
+static inline spinlock_t *qdisc_root_lock(const struct Qdisc *qdisc)
+{
+        struct Qdisc *root = qdisc_root(qdisc);
+
+        ASSERT_RTNL();
+        return qdisc_lock(root);
+}
+
+static inline spinlock_t *qdisc_root_sleeping_lock(const struct Qdisc *qdisc)
+{
+        struct Qdisc *root = qdisc_root_sleeping(qdisc);
+
+        ASSERT_RTNL();
+        return qdisc_lock(root);
+}
+
+static inline struct net_device *qdisc_dev(const struct Qdisc *qdisc)
+{
+        return qdisc->dev_queue->dev;
+}
+
+static inline void sch_tree_lock(const struct Qdisc *q)
+{
+        spin_lock_bh(qdisc_root_sleeping_lock(q));
+}
+
+static inline void sch_tree_unlock(const struct Qdisc *q)
+{
+        spin_unlock_bh(qdisc_root_sleeping_lock(q));
+}
+
+#define tcf_tree_lock(tp)       sch_tree_lock((tp)->q)
+#define tcf_tree_unlock(tp)     sch_tree_unlock((tp)->q)
+
+extern struct Qdisc noop_qdisc;
+extern struct Qdisc_ops noop_qdisc_ops;
+extern struct Qdisc_ops pfifo_fast_ops;
+extern struct Qdisc_ops mq_qdisc_ops;
+extern const struct Qdisc_ops *default_qdisc_ops;
+
+struct Qdisc_class_common {
+        u32                     classid;
+        struct hlist_node       hnode;
+};
+
+struct Qdisc_class_hash {
+        struct hlist_head       *hash;
+        unsigned int            hashsize;
+        unsigned int            hashmask;
+        unsigned int            hashelems;
+};
+
+static inline unsigned int qdisc_class_hash(u32 id, u32 mask)
+{
+        id ^= id >> 8;
+        id ^= id >> 4;
+        return id & mask;
+}
+
+static inline struct Qdisc_class_common *
+qdisc_class_find(const struct Qdisc_class_hash *hash, u32 id)
+{
+        struct Qdisc_class_common *cl;
+        unsigned int h;
+
+        h = qdisc_class_hash(id, hash->hashmask);
+        hlist_for_each_entry(cl, &hash->hash[h], hnode) {
+                if (cl->classid == id)
+                        return cl;
+        }
+        return NULL;
+}
+
+int qdisc_class_hash_init(struct Qdisc_class_hash *);
+void qdisc_class_hash_insert(struct Qdisc_class_hash *,
+                             struct Qdisc_class_common *);
+void qdisc_class_hash_remove(struct Qdisc_class_hash *,
+                             struct Qdisc_class_common *);
+void qdisc_class_hash_grow(struct Qdisc *, struct Qdisc_class_hash *);
+void qdisc_class_hash_destroy(struct Qdisc_class_hash *);
+
+void dev_init_scheduler(struct net_device *dev);
+void dev_shutdown(struct net_device *dev);
+void dev_activate(struct net_device *dev);
+void dev_deactivate(struct net_device *dev);
+void dev_deactivate_many(struct list_head *head);
+struct Qdisc *dev_graft_qdisc(struct netdev_queue *dev_queue,
+                              struct Qdisc *qdisc);
+void qdisc_reset(struct Qdisc *qdisc);
+void qdisc_destroy(struct Qdisc *qdisc);
+void qdisc_tree_decrease_qlen(struct Qdisc *qdisc, unsigned int n);
+struct Qdisc *qdisc_alloc(struct netdev_queue *dev_queue,
+                          const struct Qdisc_ops *ops);
+struct Qdisc *qdisc_create_dflt(struct netdev_queue *dev_queue,
+                                const struct Qdisc_ops *ops, u32 parentid);
+void __qdisc_calculate_pkt_len(struct sk_buff *skb,
+                               const struct qdisc_size_table *stab);
+bool tcf_destroy(struct tcf_proto *tp, bool force);
+void tcf_destroy_chain(struct tcf_proto __rcu **fl);
+
+/* Reset all TX qdiscs greater then index of a device.  */
+static inline void qdisc_reset_all_tx_gt(struct net_device *dev, unsigned int i)
+{
+        struct Qdisc *qdisc;
+
+        for (; i < dev->num_tx_queues; i++) {
+                qdisc = rtnl_dereference(netdev_get_tx_queue(dev, i)->qdisc);
+                if (qdisc) {
+                        spin_lock_bh(qdisc_lock(qdisc));
+                        qdisc_reset(qdisc);
+                        spin_unlock_bh(qdisc_lock(qdisc));
+                }
+        }
+}
+
+static inline void qdisc_reset_all_tx(struct net_device *dev)
+{
+        qdisc_reset_all_tx_gt(dev, 0);
+}
+
+/* Are all TX queues of the device empty?  */
+static inline bool qdisc_all_tx_empty(const struct net_device *dev)
+{
+        unsigned int i;
+
+        rcu_read_lock();
+        for (i = 0; i < dev->num_tx_queues; i++) {
+                struct netdev_queue *txq = netdev_get_tx_queue(dev, i);
+                const struct Qdisc *q = rcu_dereference(txq->qdisc);
+
+                if (q->q.qlen) {
+                        rcu_read_unlock();
+                        return false;
+                }
+        }
+        rcu_read_unlock();
+        return true;
+}
+
+/* Are any of the TX qdiscs changing?  */
+static inline bool qdisc_tx_changing(const struct net_device *dev)
+{
+        unsigned int i;
+
+        for (i = 0; i < dev->num_tx_queues; i++) {
+                struct netdev_queue *txq = netdev_get_tx_queue(dev, i);
+                if (rcu_access_pointer(txq->qdisc) != txq->qdisc_sleeping)
+                        return true;
+        }
+        return false;
+}
+
+/* Is the device using the noop qdisc on all queues?  */
+static inline bool qdisc_tx_is_noop(const struct net_device *dev)
+{
+        unsigned int i;
+
+        for (i = 0; i < dev->num_tx_queues; i++) {
+                struct netdev_queue *txq = netdev_get_tx_queue(dev, i);
+                if (rcu_access_pointer(txq->qdisc) != &noop_qdisc)
+                        return false;
+        }
+        return true;
+}
+
+static inline unsigned int qdisc_pkt_len(const struct sk_buff *skb)
+{
+        return qdisc_skb_cb(skb)->pkt_len;
+}
+
+/* additional qdisc xmit flags (NET_XMIT_MASK in linux/netdevice.h) */
+enum net_xmit_qdisc_t {
+        __NET_XMIT_STOLEN = 0x00010000,
+        __NET_XMIT_BYPASS = 0x00020000,
+};
+
+#ifdef CONFIG_NET_CLS_ACT
+#define net_xmit_drop_count(e)  ((e) & __NET_XMIT_STOLEN ? 0 : 1)
+#else
+#define net_xmit_drop_count(e)  (1)
+#endif
+
+static inline void qdisc_calculate_pkt_len(struct sk_buff *skb,
+                                           const struct Qdisc *sch)
+{
+#ifdef CONFIG_NET_SCHED
+        struct qdisc_size_table *stab = rcu_dereference_bh(sch->stab);
+
+        if (stab)
+                __qdisc_calculate_pkt_len(skb, stab);
+#endif
+}
+
+static inline int qdisc_enqueue(struct sk_buff *skb, struct Qdisc *sch)
+{
+        qdisc_calculate_pkt_len(skb, sch);
+        return sch->enqueue(skb, sch);
+}
+
+static inline int qdisc_enqueue_root(struct sk_buff *skb, struct Qdisc *sch)
+{
+        qdisc_skb_cb(skb)->pkt_len = skb->len;
+        return qdisc_enqueue(skb, sch) & NET_XMIT_MASK;
+}
+
+static inline bool qdisc_is_percpu_stats(const struct Qdisc *q)
+{
+        return q->flags & TCQ_F_CPUSTATS;
+}
+
+static inline void bstats_update(struct gnet_stats_basic_packed *bstats,
+                                 const struct sk_buff *skb)
+{
+        bstats->bytes += qdisc_pkt_len(skb);
+        bstats->packets += skb_is_gso(skb) ? skb_shinfo(skb)->gso_segs : 1;
+}
+
+static inline void qdisc_bstats_update_cpu(struct Qdisc *sch,
+                                           const struct sk_buff *skb)
+{
+        struct gnet_stats_basic_cpu *bstats =
+                                this_cpu_ptr(sch->cpu_bstats);
+
+        u64_stats_update_begin(&bstats->syncp);
+        bstats_update(&bstats->bstats, skb);
+        u64_stats_update_end(&bstats->syncp);
+}
+
+static inline void qdisc_bstats_update(struct Qdisc *sch,
+                                       const struct sk_buff *skb)
+{
+        bstats_update(&sch->bstats, skb);
+}
+
+static inline void qdisc_qstats_backlog_dec(struct Qdisc *sch,
+                                            const struct sk_buff *skb)
+{
+        sch->qstats.backlog -= qdisc_pkt_len(skb);
+}
+
+static inline void qdisc_qstats_backlog_inc(struct Qdisc *sch,
+                                            const struct sk_buff *skb)
+{
+        sch->qstats.backlog += qdisc_pkt_len(skb);
+}
+
+static inline void __qdisc_qstats_drop(struct Qdisc *sch, int count)
+{
+        sch->qstats.drops += count;
+}
+
+static inline void qdisc_qstats_drop(struct Qdisc *sch)
+{
+        sch->qstats.drops++;
+}
+
+static inline void qdisc_qstats_drop_cpu(struct Qdisc *sch)
+{
+        struct gnet_stats_queue *qstats = this_cpu_ptr(sch->cpu_qstats);
+
+        qstats->drops++;
+}
+
+static inline void qdisc_qstats_overlimit(struct Qdisc *sch)
+{
+        sch->qstats.overlimits++;
+}
+
+static inline int __qdisc_enqueue_tail(struct sk_buff *skb, struct Qdisc *sch,
+                                       struct sk_buff_head *list)
+{
+        __skb_queue_tail(list, skb);
+        qdisc_qstats_backlog_inc(sch, skb);
+
+        return NET_XMIT_SUCCESS;
+}
+
+static inline int qdisc_enqueue_tail(struct sk_buff *skb, struct Qdisc *sch)
+{
+        return __qdisc_enqueue_tail(skb, sch, &sch->q);
+}
+
+static inline struct sk_buff *__qdisc_dequeue_head(struct Qdisc *sch,
+                                                   struct sk_buff_head *list)
+{
+        struct sk_buff *skb = __skb_dequeue(list);
+
+        if (likely(skb != NULL)) {
+                qdisc_qstats_backlog_dec(sch, skb);
+                qdisc_bstats_update(sch, skb);
+        }
+
+        return skb;
+}
+
+static inline struct sk_buff *qdisc_dequeue_head(struct Qdisc *sch)
+{
+        return __qdisc_dequeue_head(sch, &sch->q);
+}
+
+static inline unsigned int __qdisc_queue_drop_head(struct Qdisc *sch,
+                                              struct sk_buff_head *list)
+{
+        struct sk_buff *skb = __skb_dequeue(list);
+
+        if (likely(skb != NULL)) {
+                unsigned int len = qdisc_pkt_len(skb);
+                qdisc_qstats_backlog_dec(sch, skb);
+                kfree_skb(skb);
+                return len;
+        }
+
+        return 0;
+}
+
+static inline unsigned int qdisc_queue_drop_head(struct Qdisc *sch)
+{
+        return __qdisc_queue_drop_head(sch, &sch->q);
+}
+
+static inline struct sk_buff *__qdisc_dequeue_tail(struct Qdisc *sch,
+                                                   struct sk_buff_head *list)
+{
+        struct sk_buff *skb = __skb_dequeue_tail(list);
+
+        if (likely(skb != NULL))
+                qdisc_qstats_backlog_dec(sch, skb);
+
+        return skb;
+}
+
+static inline struct sk_buff *qdisc_dequeue_tail(struct Qdisc *sch)
+{
+        return __qdisc_dequeue_tail(sch, &sch->q);
+}
+
+static inline struct sk_buff *qdisc_peek_head(struct Qdisc *sch)
+{
+        return skb_peek(&sch->q);
+}
+
+/* generic pseudo peek method for non-work-conserving qdisc */
+static inline struct sk_buff *qdisc_peek_dequeued(struct Qdisc *sch)
+{
+        /* we can reuse ->gso_skb because peek isn't called for root qdiscs */
+        if (!sch->gso_skb) {
+                sch->gso_skb = sch->dequeue(sch);
+                if (sch->gso_skb)
+                        /* it's still part of the queue */
+                        sch->q.qlen++;
+        }
+
+        return sch->gso_skb;
+}
+
+/* use instead of qdisc->dequeue() for all qdiscs queried with ->peek() */
+static inline struct sk_buff *qdisc_dequeue_peeked(struct Qdisc *sch)
+{
+        struct sk_buff *skb = sch->gso_skb;
+
+        if (skb) {
+                sch->gso_skb = NULL;
+                sch->q.qlen--;
+        } else {
+                skb = sch->dequeue(sch);
+        }
+
+        return skb;
+}
+
+static inline void __qdisc_reset_queue(struct Qdisc *sch,
+                                       struct sk_buff_head *list)
+{
+        /*
+         * We do not know the backlog in bytes of this list, it
+         * is up to the caller to correct it
+         */
+        __skb_queue_purge(list);
+}
+
+static inline void qdisc_reset_queue(struct Qdisc *sch)
+{
+        __qdisc_reset_queue(sch, &sch->q);
+        sch->qstats.backlog = 0;
+}
+
+static inline unsigned int __qdisc_queue_drop(struct Qdisc *sch,
+                                              struct sk_buff_head *list)
+{
+        struct sk_buff *skb = __qdisc_dequeue_tail(sch, list);
+
+        if (likely(skb != NULL)) {
+                unsigned int len = qdisc_pkt_len(skb);
+                kfree_skb(skb);
+                return len;
+        }
+
+        return 0;
+}
+
+static inline unsigned int qdisc_queue_drop(struct Qdisc *sch)
+{
+        return __qdisc_queue_drop(sch, &sch->q);
+}
+
+static inline int qdisc_drop(struct sk_buff *skb, struct Qdisc *sch)
+{
+        kfree_skb(skb);
+        qdisc_qstats_drop(sch);
+
+        return NET_XMIT_DROP;
+}
+
+static inline int qdisc_reshape_fail(struct sk_buff *skb, struct Qdisc *sch)
+{
+        qdisc_qstats_drop(sch);
+
+#ifdef CONFIG_NET_CLS_ACT
+        if (sch->reshape_fail == NULL || sch->reshape_fail(skb, sch))
+                goto drop;
+
+        return NET_XMIT_SUCCESS;
+
+drop:
+#endif
+        kfree_skb(skb);
+        return NET_XMIT_DROP;
+}
+
+/* Length to Time (L2T) lookup in a qdisc_rate_table, to determine how
+   long it will take to send a packet given its size.
+ */
+static inline u32 qdisc_l2t(struct qdisc_rate_table* rtab, unsigned int pktlen)
+{
+        int slot = pktlen + rtab->rate.cell_align + rtab->rate.overhead;
+        if (slot < 0)
+                slot = 0;
+        slot >>= rtab->rate.cell_log;
+        if (slot > 255)
+                return rtab->data[255]*(slot >> 8) + rtab->data[slot & 0xFF];
+        return rtab->data[slot];
+}
+
+#ifdef CONFIG_NET_CLS_ACT
+static inline struct sk_buff *skb_act_clone(struct sk_buff *skb, gfp_t gfp_mask,
+                                            int action)
+{
+        struct sk_buff *n;
+
+        n = skb_clone(skb, gfp_mask);
+
+        if (n) {
+                n->tc_verd = SET_TC_VERD(n->tc_verd, 0);
+                n->tc_verd = CLR_TC_OK2MUNGE(n->tc_verd);
+                n->tc_verd = CLR_TC_MUNGED(n->tc_verd);
+        }
+        return n;
+}
+#endif
+
+struct psched_ratecfg {
+        u64     rate_bytes_ps; /* bytes per second */
+        u32     mult;
+        u16     overhead;
+        u8      linklayer;
+        u8      shift;
+};
+
+static inline u64 psched_l2t_ns(const struct psched_ratecfg *r,
+                                unsigned int len)
+{
+        len += r->overhead;
+
+        if (unlikely(r->linklayer == TC_LINKLAYER_ATM))
+                return ((u64)(DIV_ROUND_UP(len,48)*53) * r->mult) >> r->shift;
+
+        return ((u64)len * r->mult) >> r->shift;
+}
+
+void psched_ratecfg_precompute(struct psched_ratecfg *r,
+                               const struct tc_ratespec *conf,
+                               u64 rate64);
+
+static inline void psched_ratecfg_getrate(struct tc_ratespec *res,
+                                          const struct psched_ratecfg *r)
+{
+        memset(res, 0, sizeof(*res));
+
+        /* legacy struct tc_ratespec has a 32bit @rate field
+         * Qdisc using 64bit rate should add new attributes
+         * in order to maintain compatibility.
+         */
+        res->rate = min_t(u64, r->rate_bytes_ps, ~0U);
+
+        res->overhead = r->overhead;
+        res->linklayer = (r->linklayer & TC_LINKLAYER_MASK);
+}
+
+#endif
 
 ```
