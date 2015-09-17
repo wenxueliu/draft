@@ -24,3 +24,10 @@ state_name(enum state state)
     }
     return "***ERROR***";
 }
+
+
+###参考
+
+* https://gcc.gnu.org/onlinedocs/cpp/Macros.html#Macros
+* Openvswitch Source Code
+
