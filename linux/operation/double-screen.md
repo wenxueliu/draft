@@ -161,7 +161,18 @@ $ xrandr --output VGA1 --mode 1366x768 --output LVDS1 --of
 
 搞定.
 
+## 1366 x 768 显示问题
+
+Due to ASPEED AST2400 design limitation, the display enable region must be
+multiple by 8. In this case, the horizontal pixel is 1366, but the enable region
+is 1360. That is why most right 6 pixels you cannot see. Suggest adjust to
+1360x768 or 1280x768 resolution instead of 1366x768. 
+
 ###参考
 
 [1]: http://blog.chinaunix.net/uid-170694-id-2833685.html
 [2]: http://forum.ubuntu.org.cn/viewtopic.php?f=42&t=458723
+[3]: https://wiki.archlinux.org/index.php/Xrandr_%28%E7%AE%80%E4%BD%93%E4%B8%AD%E6%96%87%29
+http://blog.leanote.com/post/etng2004@gmail.com/linux-add-more-screen-resolution-linux%E6%B7%BB%E5%8A%A0%E5%A4%9A%E7%A7%8D%E5%B1%8F%E5%B9%95%E5%88%86%E8%BE%A8%E7%8E%87
+
+https://wiki.ubuntu.com/X/Config/Resolution
