@@ -1,4 +1,19 @@
 
+##QA
+
+Q: 目前网络的 RTT 是 1 ms, 如何模拟 10ms 的 RTT.
+A: 通过 tc, sudo tc qdisc add dev eth0 root netem delay 10ms
+
+
+
+##TCP 相关参数介绍
+
+sysctl -a
+man tcp
+man -S7 socket
+
+###参数调优
+
 两种修改内核参数方法
 
     使用echo value方式直接追加到文件里如echo "1" >/proc/sys/net/ipv4/tcp_syn_retries, 但这种方法设备重启后又会恢复为默认值
@@ -232,16 +247,19 @@ TCP流中重排序的数据报最大数量.  (一般有看到推荐把这个数�
 发送缓存设置
 
 min: 为 TCP socket 预留用于发送缓冲的内存最小值. 每个 tcp socket 都可以在建议
-以后都可以使用它. 默认值为4096(4K).
+以后都可以使用它. 默认值为 4096(4K).
 
 default: 为 TCP socket 预留用于发送缓冲的内存数量, 默认情况下该值会影响其它协议
 使用的 net.core.wmem_default 值, 一般要低于 net.core.wmem_default 的值. 默认值为
 16384(16K).
 
-max: 用于 TCP socket 发送缓冲的内存最大值. 该值不会影响 net.core.wmem_max,
-默认值为 131072(128K). (对于服务器而言, 增加这个参数的值对于发送数据很有帮助, 在
-我的网络环境中, 修改为了 51200 131072 204800）
+max: 用于 TCP socket 发送缓冲的内存最大值. 该值不会影响 net.core.wmem_max, "静态"
+选择参数 SO_SNDBUF 则不受该值影响. 默认值为 131072(128K). （对于服务器而言, 增加这
+个参数的值对于发送数据很有帮助, 在我的网络环境中, 修改为了 51200 131072 204800）
 
+SO_SNDBUF 是具体连接的写缓存大小, 不受制于 tcp_wmem 的值, 但受制于 net.core.wmem_max
+即当 SO_SNDBUF 大于  net.core.wmem_max 时, 取 net.core.wmem_max. 需要注意的是,
+实际值是 SO_SNDBUF * 2
 发送端缓冲的自动调节机制很早就已经实现, 并且是无条件开启, 没有参数去设置. 如果指
 定了 tcp_wmem, 则 net.core.wmem_default 被 tcp_wmem 的覆盖. sendBuffer 在 tcp_wmem
 的最小值和最大值之间自动调节. 如果调用 setsockopt() 设置了 socket 选项 SO_SNDBUF,
@@ -255,31 +273,36 @@ max: 用于 TCP socket 发送缓冲的内存最大值. 该值不会影响 net.co
 
 接收缓存设置 同 tcp_wmem
 
-BDP(Bandwidth-delayproduct,带宽延迟积) 是网络的带宽和与 RTT(roundtrip time) 的乘积,
+BDP(Bandwidth-delayproduct, 带宽延迟积) 是网络的带宽和与 RTT(roundtrip time) 的乘积,
 BDP 的含义是任意时刻处于在途未确认的最大数据量. RTT 使用 ping 命令可以很容易的得到.
-为了达到最大的吞吐量, recvBuffer 的设置应该大于 BDP, 即 recvbuf >= bandwidth * RTT.
+为了达到最大的吞吐量, recvBuffer 的设置应该大于 BDP, 即 recvBuffer >= bandwidth * RTT.
 
 假设带宽是 100Mbps, RTT 是 100ms, 那么 BDP 的计算如下:
 
 	BDP = 100Mbps * 100ms = (100 / 8) * (100 / 1000) = 1.25MB
 
-Linux 在 2.6.17 以后增加了 rcvbuf 自动调节机制, rcvbuf 的实际大小会自动在最小值和
-最大值之间浮动, 以期找到性能和资源的平衡点, 因此大多数情况下不建议将 rcvbuf 手工设
-置成固定值.
+Linux 在 2.6.17 以后增加了 rcvBuf 自动调节机制, rcvBuf 的实际大小会自动在最小值和
+最大值之间浮动, 以期找到性能和资源的平衡点, 因此大多数情况下不建议将 rcvBuf 手工
+设置成固定值.
 
-当 net.ipv4.tcp_moderate_rcvbuf = 1 时, 自动调节机制生效, 每个 TCP 连接的 rcvbuf
+当 net.ipv4.tcp_moderate_rcvbuf = 1 时, 自动调节机制生效, 每个 TCP 连接的 rcvBuf
 由下面的 3 元数组指定:
 
 net.ipv4.tcp_rmem = 4096 87380   6291456
 
-最初 rcvbuffer 被设置为 87380, 同时这个缺省值会覆盖 net.core.rmem_default 的设置. 随后
-rcvbuf 根据实际情况在最大值和最小值之间动态调节. 在缓冲的动态调优机制开启的情况下,
+最初 rcvBuf 被设置为 87380, 同时这个缺省值会覆盖 net.core.rmem_default 的设置.
+随后 rcvBuf 根据实际情况在最大值和最小值之间动态调节. 在缓冲的动态调优机制开启的情况下,
 我们将 net.ipv4.tcp_rmem 的最大值设置为BDP.
 
 当 net.ipv4.tcp_moderate_rcvbuf = 0 时, 或者设置了 socket 选项 SO_RCVBUF, 缓冲的
-动态调节机制被关闭. rcvbuf 的缺省值由 net.core.rmem_default 设置, 但如果设置了
-net.ipv4.tcp_rmem, 缺省值则被覆盖. 可以通过系统调用 setsockopt() 设置 rcvbuf 的最大值
-为 net.core.rmem_max. 在缓冲动态调节机制关闭的情况下, 建议把缓冲的缺省值设置为 BDP.
+动态调节机制被关闭. rcvBuf 的缺省值由 net.core.rmem_default 设置, 但如果设置了
+net.ipv4.tcp_rmem, 缺省值则被覆盖. 可以通过系统调用 setsockopt() 设置 rcvBuf
+(man -S7 socket) 的最大值为 net.core.rmem_max. 在缓冲动态调节机制关闭的情况下,
+建议把缓冲的缺省值设置为 BDP.
+
+注意这里还有一个细节，缓冲除了保存接收的数据本身，还需要一部分空间保存 socket 数据结构等额外信息.
+因此上面讨论的 recvBuffer 最佳值仅仅等于 BDP 是不够的, 还需要考虑保存 socket 等额外信息的开销.
+Linux 根据参数 net.ipv4.tcp_adv_win_scale 计算额外开销的大小:
 
 注意这里还有一个细节, 缓冲除了保存接收的数据本身, 还需要一部分空间保存 socket 数据结构
 等额外信息. 因此上面讨论的 rcvbuf 最佳值仅仅等于 BDP 是不够的, 还需要考虑保存 socket
@@ -288,11 +311,14 @@ net.ipv4.tcp_rmem, 缺省值则被覆盖. 可以通过系统调用 setsockopt() 
     Buffer / 2^(tcp_adv_win_scale)
 
 如果 net.ipv4.tcp_adv_win_scale 的值为 1, 则二分之一的缓冲空间用来做额外开销, 如果为 2
-的话, 则四分之一缓冲空间用来做额外开销. 因此 rcvbuf 的最佳值应该设置为:
+的话, 则四分之一缓冲空间用来做额外开销. 因此 rcvBuf 的最佳值应该设置为:
 
-    Buffer / (1-1/2^(tcp_adv_win_scale))
+  rcvBuf = BDP / (1 - 2^tcp_adv_win_scale)
 
-###tcp_mem: mindefaultmax
+SO_RCVBUF 是具体连接的值, 受限于 net.core.rmem_max, 最小为 256.
+
+
+###tcp_mem: min default max
 
 * 默认值 根据内存计算
 * 建议值 786432 1048576 1572864
@@ -534,6 +560,7 @@ net.core.somaxconn
     #在充当网关的linux主机上缺省值为1, 在一般的linux主机上缺省值为0. 
     #从安全性角度出发, 建议你关闭该功能. 
 
-参考
+##参考
 
 Documentation/networking/ip-sysctl.txt
+http://sandilands.info/sgordon/impact-of-bandwidth-delay-product-on-tcp-throughput
