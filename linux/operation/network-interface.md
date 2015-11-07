@@ -7,8 +7,7 @@
         # The primary network      interface
         auto   eth0
         iface  eth0  inet static   
-        address         192.168.0.42 
-        network         192.168.0.0 
+        address         192.168.0.42 network         192.168.0.0 
         netmask        255.255.255.0 
         broadcast      192.168.0.255 
         gateway        192.168.0.1
@@ -209,6 +208,28 @@ interfaces 和 nm 中的网络设置不一样, 系统实际的 IP 是哪个? 有
 
     sudo strace -e open ifup eth0
     sh -x `which ifup` eth0
+
+##RedHat/CentOS
+
+vim /etc/sysconfig/network-scripts/ifcfg-eth0
+
+    # Advanced Micro Devices [AMD] 79c970 [PCnet32 LANCE]
+    DEVICE=eth0
+    BOOTPROTO=static
+    BROADCAST=192.168.0.255
+    HWADDR=00:0C:29:25:96:A3
+    #第1个IP
+    IPADDR=192.168.0.2
+    NETMASK=255.255.255.0
+    NETWORK=192.168.0.0
+    ONBOOT=yes
+    GATEWAY=192.168.0.1
+
+重启网卡
+
+    ifdown eth0
+    ifup eth0
+    service network restart
 
 ###参考
 [1](debian参考手册)
