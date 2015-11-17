@@ -101,7 +101,6 @@ $ cat /proc/net/bonding/bond0
 网卡收到一定的数据后, 驱动会产生中断, 然后交由 CPU 来处理, 在单核时代, 直接扔给那个核处理就 OK, 但多核时代呢, 怎么办呢, 一种最
 简单的能想到的方法自然是 RR, 就第一个给 cpu 0，第二个给cpu 1, 但这会导致包乱序的问题, 没办法采用.
 
-
 普通的NIC来分发这些接收到的数据包到CPU核处理需要一定的知识智能以帮助提升性能，如果数据包被任意的分配给某个CPU核来处理就可能会导致所谓的“CACHELINE-PINGPONG”现象，这时候RPS就出现了。
 
 为了能充分发挥多核的能力, google 的 Tom Herbert 做了个 patch, 称为 Receive Packet Steering, 缩写为 RPS, 能够做到将网卡中断较为
@@ -118,7 +117,18 @@ Receive flow steering, 缩写为 RFS.
 目前 RPS 和 RFS 已集成到 linux 2.6.35 中, 如果内核是这个版本的以上的可以直接使用, 如果是低于这个版本的, 就只能自己backport了, 但据一
 些玩内核的同学的经验, 这个 patch 还不是很好 backport...
 
-默认情况下, 这个功能并没有开启, 需要手动开启开启方法, 开启的前提是多队列网卡才有效果.
+默认情况下, 这个功能并没有开启
+
+    $ cat /sys/class/net/eth2/queues/rx-0/rps_cpus
+    00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000
+
+    $ cat /sys/class/net/eth2/queues/rx-0/rps_flow_cnt
+    0
+
+    $ cat /proc/sys/net/core/rps_sock_flow_entries
+    0
+
+需要手动开启开启方法, 开启的前提是多队列网卡才有效果.
 
     echo ff > /sys/class/net/<interface>/queues/rx-<number>/rps_cpus
     echo 4096 > /sys/class/net/<interface>/queues/rx-<number>/rps_flow_cnt
@@ -129,6 +139,7 @@ Receive flow steering, 缩写为 RFS.
 /proc/sys/net/core/rps_sock_flow_entries 的数值是根据你的网卡多少个通道, 计算得出的数据, 例如你是 8 通道的网卡, 那么 1
 个网卡, 每个通道设置 4096 的数值, 8*4096 就是 /proc/sys/net/core/rps_sock_flow_entries 的数值, 对于内存大的机器可以适当
 调大 rps_flow_cnt, 这个时候基本可以把软中断均衡到各个 cpu 上了
+
 
 NOTE:
 
