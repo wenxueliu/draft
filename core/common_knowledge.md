@@ -42,13 +42,54 @@ Simple math: 1s / 250usec = 4GB/sec maximum
 * Round trip within same datacenter     500,000 ns
 * Read 1 MB sequentially from network   10,000,000 ns
 * Send packet CA->Netherlands->CA       150,000,000 ns
+* 异地机房之间网络来回 30-100ms
 
 ##IO
+
 * Disk seek 10,000,000 ns
 * Read 1 MB sequentially from memory 250,000 ns
 * Read 1 MB sequentially from disk 30,000,000 ns
 * Writes are 40 times more expensive than reads.
 
+* 从 sata 磁盘顺序读取1M数据 20ms
+* SSD访问延迟 0.1-0.2ms
+* 内存IOPS 千万级
+* SSD盘IOPS 35000
+
+* 7200转SATA磁盘IOPS 75-100
+* 10000转SATA磁盘IOPS 125-150
+* 10000转SAS磁盘IOPS 140
+* 15000转SAS磁盘IOPS 175-210
+* Fusion-io SSD盘 140000 Read IOPS, 135000 Write IOPS 
+
+* SATA1.0 理论数据传输 150MB/s
+* SATA2.0 理论传输速度 300MB/s
+* SATA3.0 理论传输速度 750MB/s
+
+* 金士顿SSD 读取 535MB/秒
+* 金士顿SSD 写入 500MB/秒
+
+* 磁盘平均存取时间 = 平均旋转延迟搜索时间(潜伏时间) + 平均寻道时间
+* SATA磁盘平均寻道时间 10ms
+* 7200转HDD的平均潜伏时间4.17ms
+* 10000转HDD的平均潜伏时间3.00ms
+* 15000转HDD的平均潜伏时间2.00ms
+
+##数据库
+
+* MySQL性能评测本身需要的环境：cpu、disk、engine、表结构和大小、线程数、各参数设置：
+* 参考（pc）：单线程百万级别表qps：330-370
+* 参考（pc）：64线程百万级别表qps：700-900
+* 参考（pc）：多线程百万级别表tps：400-800
+* 淘宝双十一单机qps峰值：6.5w
+* MySQL 5.7只读InnoDB Memcached plugin版单机qps：100w
+
+##可用性
+
+* 99.999%的可用性：每年的宕机时间不超过5分钟
+* 99.99%的可用性：每年的宕机时间不超过52.5分钟
+* 99.9%的可用性：每年的宕机时间不超过8.75小时
+* MySQL Cluster可用性：99.999%
 
 ##The Lessons
 
