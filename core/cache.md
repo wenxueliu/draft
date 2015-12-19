@@ -32,12 +32,15 @@ cache 的替换是以 cacheline 为单位的.
 问静态变量, 那么至少要访问两个 line, 甚至有可能是不同的 set.
 
 从CPU到寄存器   大约需要的CPU周期   大约需要的时间(单位ns)
+
     1 cycle
     L1 Cache    ~3-4 cycles         ~0.5-1 ns
     L2 Cache    ~10-20 cycles       ~3-7 ns
     L3 Cache    ~40-45 cycles       ~15 ns
     跨槽传输                        ~20 ns
         内存    ~120-240 cycles     ~60-120ns
+
+![cpu 与内存差距](gap_cpu_mem.png)
 
 就像数据库cache一样, 获取数据时首先会在最快的cache中找数据, 如果没有命中(Cache miss) 则往下一级找,
 直到三层Cache都找不到,那只要向内存要数据了.  一次次地未命中,代表取数据消耗的时间越长.
