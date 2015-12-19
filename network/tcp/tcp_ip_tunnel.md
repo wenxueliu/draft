@@ -1,4 +1,82 @@
 
+## TCP 调优
+
+调优的前提是诊断出问题, 而不是对内核参数的随意或猜测性修改. 犹如名医诊断病人,
+能通过望, 闻, 问, 切对诊断病人的病情, 之后对症下药. 网络调优也是如此, 只有
+发现问题, 仔细诊断问题根源, 之后解决问题. 下面就谈谈, 网络的望,闻, 问, 切的
+精要.
+
+首先, 只有出问题才需要调优. 最常见的问题是发生丢包, 导致应用出现错误.
+
+###望
+
+要诊断网络系统的问题, 首先要通过工具, 下面就先谈谈哪些工具进行网络问题的诊断.
+
+假设我们给系统发生了 6000 个并发持续一小时, 以下是诊断手段
+
+1. 检查是建立了 6000 个 TCP 连接
+
+$ss -s
+
+    Total: 6380 (kernel 0)
+    TCP:   24887 (estab 2150, closed 19290, orphaned 0, synrecv 0, timewait
+            19289/0), ports 0
+
+    Transport Total     IP        IPv6
+    *         0         -         -
+    RAW       1         0         1
+    UDP       19        13        6
+    TCP       5597      5592      5
+    INET      5617      5605      12
+    FRAG      0         0         0
+
+$ sudo ss -s
+Total: 6546 (kernel 6977)
+    TCP:   27010 (estab 3174, closed 21253, orphaned 0, synrecv 0, timewait
+            21252/0), ports 0
+
+    Transport Total     IP        IPv6
+    *         6977      -         -
+    RAW       1         0         1
+    UDP       19        13        6
+    TCP       5757      5752      5
+    INET      5777      5765      12
+    FRAG      0         0         0
+
+注意, 一定要 sudo, 结果是由区别的
+
+2. 检查网卡是否发生丢包
+
+$ sudo  ping -f SERVER_IP
+
+$ sudo netstat -i
+
+    Kernel Interface table
+    Iface      MTU    RX-OK RX-ERR RX-DRP RX-OVR    TX-OK TX-ERR TX-DRP TX-OVR Flg
+    em1       1500 975363774      0   5077 0      770774553      0      0      0
+    BMRU
+    em2       1500  3112089      0      0 0       2910292      0      0      0 BMRU
+    lo       65536      761      0      0 0           761      0      0      0 LRU
+    virbr0    1500        0      0      0 0             1      0      0      0 BMU
+
+$ sudo ip -s link show em1
+
+    2: em1: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc mq state UP mode DEFAULT qlen 1000
+        link/ether f0:1f:af:e5:ba:39 brd ff:ff:ff:ff:ff:ff
+        RX: bytes  packets  errors  dropped overrun mcast
+        83771290092 979075631 0       4899    0       5107
+        TX: bytes  packets  errors  dropped carrier collsns
+        160083089401 773788434 0       0       0       0
+
+
+3. 检查 tcp 更详细的情况
+
+ss -ant | awk ' {++state[$1]} END {for(k in state) print k,state[k]} '
+
+$ nstat
+
+4. 内核参数
+
 ##QA
 
 Q: 目前网络的 RTT 是 1 ms, 如何模拟 10ms 的 RTT.
@@ -18,27 +96,29 @@ man -S7 socket
 
     使用echo value方式直接追加到文件里如echo "1" >/proc/sys/net/ipv4/tcp_syn_retries, 但这种方法设备重启后又会恢复为默认值
 
-    把参数添加到/etc/sysctl.conf中, 然后执行sysctl -p使参数生效, 永久生效
+    把参数添加到/etc/sysctl.conf中, 然后执行sysctl -p 使参数生效, 永久生效
+
+    注: 修改参数后需要重启应用. 如 nginx
 
 ##/proc/sys/net/ipv4/
 
-###tcpsyn_retries
+###tcp_syn_retries
 
 * 默认值 5
 * 建议值 1
 
-对于一个新建连接, 内核要发送多少个 SYN 连接请求才决定放弃. 不应该大于255, 默认值是5, 
-对应于 180 秒左右时间. . (对于大负载而物理通信良好的网络而言,这个值偏高,可修改为2.
-这个值仅仅是针对对外的连接,对进来的连接,是由 tcp_retries1 决定的)
+对于一个新建连接, 内核要发送多少个 SYN 连接请求才决定放弃. 不应该大于255, 默认值是5,
+对应于 180 秒左右时间.(对于大负载而物理通信良好的网络而言, 这个值偏高, 可修改为2.
+这个值仅仅是针对对外的连接, 对进来的连接, 是由 tcp_retries1 决定的)
 
 ###tcp_synack_retries
 
 * 默认值 5
 * 建议值 1
 
-对于远端的连接请求 SYN, 内核会发送 SYN ＋ ACK 数据报, 以确认收到上一个 SYN 连接请求包. 
-这是所谓的三次握手( threeway handshake)机制的第二个步骤. 这里决定内核在放弃连接之前所
-送出的 SYN+ACK 数目. 不应该大于255, 默认值是 5, 对应于 180 秒左右时间. 
+对于远端的连接请求 SYN, 内核会发送 SYN ＋ ACK 数据报, 以确认收到上一个 SYN 连接请求包.
+这是所谓的三次握手(three way handshake)机制的第二个步骤. 这里决定内核在放弃连接之前所
+送出的 SYN+ACK 数目. 不应该大于255, 默认值是 5, 对应于 180 秒左右时间.
 
 ###tcp_keepalive_time 有误??
 
@@ -60,14 +140,14 @@ TCP 发送 keepalive 探测消息的间隔时间（秒）, 用于确认 TCP 连�
 * 默认值 3
 * 建议值 3
 
-放弃回应一个 TCP 连接请求前﹐需要进行多少次重试. RFC 规定最低的数值是 3
+放弃回应一个 TCP 连接请求前, 需要进行多少次重试. RFC 规定最低的数值是 3
 
 ###tcp_retries2
 
 * 默认值 15
 * 建议值 5
 
-在丢弃激活(已建立通讯状况)的 TCP 连接之前﹐需要进行多少次重试. 默认值为 15, 根据 RTO 的值来决定, 
+在丢弃激活(已建立通讯状况)的 TCP 连接之前﹐需要进行多少次重试. 默认值为 15, 根据 RTO 的值来决定,
 相当于 13-30 分钟(RFC1122规定, 必须大于100秒).(这个值根据目前的网络设置,可以适当地改小,我的网络
 内修改为了 5)
 
@@ -559,6 +639,12 @@ net.core.somaxconn
     #是否接受含有源路由信息的ip包. 参数值为布尔值, 1表示接受, 0表示不接受. 
     #在充当网关的linux主机上缺省值为1, 在一般的linux主机上缺省值为0. 
     #从安全性角度出发, 建议你关闭该功能. 
+
+在高并发下修改如下参数:
+
+    net.core.somaxconn    8192
+    net.ipv4.tcp_max_syn_backlog 1024
+    listen系统调用的backlog参数  8192
 
 ##参考
 
