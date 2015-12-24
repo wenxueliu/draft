@@ -15,22 +15,335 @@ TCP, UDP 基本知识。
 
 java 基本语法及知识
 
+##Netty 原理分析
 
-##模型
+首先我们看 netty 包的组成, 在[官方文档](http://netty.io/3.10/api/index.html)中的左上角, 我们可以看到 netty 包的组成
+
+    org.jboss.netty.bootstrap
+    org.jboss.netty.buffer
+    org.jboss.netty.channel
+    org.jboss.netty.handler
+    org.jboss.netty.logging
+    org.jboss.netty.util
+
+这六大类, 因此, 基本的概念就是 bootstrap, channel, buffer, handler. logging 忽略不计, util 是工具类.
+
+###模型
+
+Factory 创建对象的辅助类
+
+###bootstrap
+
+org.jboss.netty.bootstrap 包括: Bootstrap, ClientBootstrap, ConnectionlessBootstrap, ServerBootstrap 非常直观.
+
+再看看各个类的说明
+
+####Bootstrap
+
+A helper class which initializes a Channel. This class provides the common data structure for its subclasses which actually
+initialize Channels and their child Channels using the common data structure. Please refer to ClientBootstrap, ServerBootstrap,
+and ConnectionlessBootstrap for client side, server-side, and connectionless (e.g. UDP) channel initialization respectively.
+
+####ClientBootstrap
+
+A helper class which creates a new client-side Channel and makes a connection attempt.
+
+####ConnectionlessBootstrap
+
+A helper class which creates a new server-side Channel for a connectionless transport.
+
+####ServerBootstrap
+
+A helper class which creates a new server-side Channel and accepts incoming connections.
+
+至此, 它们之间的关系已经很明了. Bootstrap 首先是 Channel 的辅助函数, 实现了 ClientBootstrap, ConnectionlessBootstrap, ServerBootstrap 的公共部分.
+其中 ClientBootstrap 用于实现面向连接(TCP)的客户端, ServerBootstrap 用于实现面向连接(TCP)的服务端 ConnectionlessBootstrap 用于实现无连接(UDP)
+的客户端或服务端.
+
+分析 Bootstrap 发现它与 ChannelFactory, ChannelPipeline, ChannelPipelineFactory
+有关, 与 Channel 的关系后文再表.
+
+此外, 这里通过继承而不是组合来实现, 我们可以思考下, 在其他语言中是否也应该这样做.
 
 
-###Channel  
+##channel
 
-路径抽象，用于连接服务端和客户端，传输的内容是二进制流。
+服务端和客户端的每一个连接就是一个 channel, 传输的内容是二进制流. 主要分为三种类或接口, 1. 创建 channel  2. 处理 channel 数据. 3 配置 channel
 
-Channel 的创建有一个专门抽象的 ChannelFactory 类。工厂做什么事，生产各种 Channel，自然而直观。那么它能生产哪些 Channel 呢？
+###创建 channel 的接口及类
+
+####Channel
+
+A nexus to a network socket or a component which is capable of I/O operations such as read, write, connect, and bind. 
+
+A channel provides a user:
+
+* the current state of the channel (e.g. is it open? is it connected?),
+* the configuration parameters of the channel (e.g. receive buffer size),
+* the I/O operations that the channel supports (e.g. read, write, connect, and bind), and
+* the ChannelPipeline which handles all I/O events and requests associated with the channel.
+
+子接口
+
+    DatagramChannel             //Channel
+    LocalChannel                //Channel
+    ServerChannel               //Channel
+    LocalServerChannel          //ServerChannel
+    ServerSocketChannel         //ServerChannel
+    SocketChannel               //Channel
+
+框架实现的类
+
+    AbstractChannel             //Channel
+        AbstractServerChannel   //ServerChannel
+        NioDatagramChannel      //DatagramChannel
+        NioSocketChannel        //SocketChannel
+
+与 ChannelFuture 和 ChannelConfig 关联
+
+####ChannelFactory
+
+用户创建 channel 的辅助类
+
+The main interface to a transport that creates a Channel associated with a certain communication entity such as a network socket.
+
+子接口
+
+    ClientSocketChannelFactory                 //ChannelFactory
+    DatagramChannelFactory                     //ChannelFactory
+    LocalClientChannelFactory                  //ChannelFactory
+    LocalServerChannelFactory                  //ServerChannelFactory
+    ServerChannelFactory                       //ChannelFactory
+    ServerSocketChannelFactory                 //ServerChannelFactory
+
+框架默认的实现类
+
+    DefaultLocalClientChannelFactory           //LocalClientChannelFactory
+    DefaultLocalServerChannelFactory           //LocalServerChannelFactory
+    NioDatagramChannelFactory                  //DatagramChannelFactory
+    NioServerSocketChannelFactory              //ServerSocketChannelFactory
+    OioServerSocketChannelFactory              //ServerSocketChannelFactory
+    HttpTunnelingClientSocketChannelFactory    //ClientSocketChannelFactory
+    NioClientSocketChannelFactory              //ClientSocketChannelFactory
+    OioClientSocketChannelFactory              //ClientSocketChannelFactory
+    OioDatagramChannelFactory                  //DatagramChannelFactory
+
+当需要实现自己的 Channel 时, 根据需要继承 ChannelFactory 或 其子接口
+
+###处理 channle 事件的接口及类
+
+####ChannelPipeline
+
+A list of ChannelHandlers which handles or intercepts ChannelEvents of a Channel. ChannelPipeline implements an advanced form of the Intercepting
+Filter pattern to give a user full control over how an event is handled and how the ChannelHandlers in the pipeline interact with each other.
+
+For each new channel, a new pipeline must be created and attached to the channel. Once attached, the coupling between the channel and the pipeline
+is permanent; the channel cannot attach another pipeline to it nor detach the current pipeline from it.
+
+                                           I/O Request
+                                         via Channel or
+                                     ChannelHandlerContext
+                                               |
+      +----------------------------------------+---------------+
+      |                  ChannelPipeline       |               |
+      |                                       \|/              |
+      |  +----------------------+  +-----------+------------+  |
+      |  | Upstream Handler  N  |  | Downstream Handler  1  |  |
+      |  +----------+-----------+  +-----------+------------+  |
+      |            /|\                         |               |
+      |             |                         \|/              |
+      |  +----------+-----------+  +-----------+------------+  |
+      |  | Upstream Handler N-1 |  | Downstream Handler  2  |  |
+      |  +----------+-----------+  +-----------+------------+  |
+      |            /|\                         .               |
+      |             .                          .               |
+      |     [ sendUpstream() ]        [ sendDownstream() ]     |
+      |     [ + INBOUND data ]        [ + OUTBOUND data  ]     |
+      |             .                          .               |
+      |             .                         \|/              |
+      |  +----------+-----------+  +-----------+------------+  |
+      |  | Upstream Handler  2  |  | Downstream Handler M-1 |  |
+      |  +----------+-----------+  +-----------+------------+  |
+      |            /|\                         |               |
+      |             |                         \|/              |
+      |  +----------+-----------+  +-----------+------------+  |
+      |  | Upstream Handler  1  |  | Downstream Handler  M  |  |
+      |  +----------+-----------+  +-----------+------------+  |
+      |            /|\                         |               |
+      +-------------+--------------------------+---------------+
+                    |                         \|/
+      +-------------+--------------------------+---------------+
+      |             |                          |               |
+      |     [ Socket.read() ]          [ Socket.write() ]      |
+      |                                                        |
+      |  Netty Internal I/O Threads (Transport Implementation) |
+      +--------------------------------------------------------+
+
+An upstream event is handled by the upstream handlers in the bottom-up direction as shown on the left side of the diagram.
+An upstream handler usually handles the inbound data generated by the I/O thread on the bottom of the diagram. The inbound
+data is often **read from a remote peer** via the actual input operation such as InputStream.read(byte[]). If an upstream
+event goes beyond the top upstream handler, it is discarded silently.
+
+A downstream event is handled by the downstream handler in the top-down direction as shown on the right side of the diagram.
+A downstream handler usually generates or transforms the outbound traffic such as write requests. If a downstream event goes
+beyond the bottom downstream handler, it is handled by an I/O thread associated with the Channel. The I/O thread often performs
+the actual output operation such as OutputStream.write(byte[]).
+
+
+
+框架默认的实现类
+
+    DefaultChannelPipeline //ChannelPipeline
+
+与 ChannelHandler, ChannelHandlerContext, Channel, ChannelSink 关联
+
+####ChannelPipelineFactory
+
+Creates a new ChannelPipeline for a new Channel.
+
+When a server-side channel accepts a new incoming connection, a new child channel is created for each newly accepted connection.
+A new child channel uses a new ChannelPipeline, which is created by the ChannelPipelineFactory specified in the server-side channel's
+"pipelineFactory" option.
+
+
+####Channels
+
+A helper class which provides various convenience methods related with Channel, ChannelHandler, and ChannelPipeline.
+
+It is always recommended to use the factory methods provided by Channels rather than calling the constructor of the implementation types.
+
+    pipeline()
+    pipeline(ChannelPipeline)
+    pipelineFactory(ChannelPipeline)
+    succeededFuture(Channel)
+    failedFuture(Channel, Throwable)
+
+####ChannelEvent
+
+An I/O event or I/O request associated with a Channel.
+
+A ChannelEvent is handled by a series of ChannelHandlers in a ChannelPipeline.
+
+子接口
+
+    ChannelStateEvent           //ChannelEvent
+
+框架默认的实现类
+
+    DownstreamChannelStateEvent //ChannelStateEvent
+    UpstreamChannelStateEvent   //ChannelStateEvent
+
+**upstream Event**
+
+When your server receives a message from a client, the event associated with the received message is an upstream event. When
+your server sends a message or reply to the client, the event associated with the write request is a downstream event.
+
+**downstream Event**
+
+If your client sent a request to the server, it means your client triggered a downstream event. If your client received a response
+from the server, it means your client will be notified with an upstream event.
+
+即写为 downstream, 读为 upstream
+
+**Upstream events**
+
+    Event name	            Event type and condition	                            Meaning
+    messageReceived 	        MessageEvent 	                a message object (e.g. ChannelBuffer) was received from a remote peer
+    exceptionCaught 	        ExceptionEvent 	                an exception was raised by an I/O thread or a ChannelHandler
+    channelOpen 	            ChannelStateEvent         	    a Channel is open, but not bound nor connected
+    channelClosed   	        ChannelStateEvent               a Channel was closed and all its related resources were released
+    channelBound   	            ChannelStateEvent               a Channel is open and bound to a local address, but not connected.
+    channelUnbound 	            ChannelStateEvent               a Channel was unbound from the current local address
+    channelConnected            ChannelStateEvent               a Channel is open, bound to a local address, and connected to a remote address
+    writeComplete               WriteCompletionEvent            something has been written to a remote peer
+    channelDisconnected         ChannelStateEvent               a Channel was disconnected from its remote peer
+    channelInterestChanged      ChannelStateEvent               a Channel's interestOps was changed
+
+    childChannelOpen            ChildChannelStateEvent          a child Channel was open (e.g. a server channel accepted a connection.)
+    childChannelClosed          ChildChannelStateEvent          a child Channel was closed (e.g. the accepted connection was closed.)
+
+**downstream events**
+
+    Event name	            Event type and condition	                            Meaning
+    write                       MessageEvent	                    Send a message to the Channel.
+    bind 	                    ChannelStateEvent                   Bind the Channel to the specified local address.
+    unbind 	                    ChannelStateEvent                   Unbind the Channel from the current local address.
+    connect                     ChannelStateEvent                   Connect the Channel to the specified remote address.
+    disconnect                  ChannelStateEvent                   Disconnect the Channel from the current remote address.
+    close                       ChannelStateEvent                   Close the Channel.
+
+
+####ChannelHandler
+
+Handles or intercepts a ChannelEvent, and sends a ChannelEvent to the next handler in a ChannelPipeline.
+
+A ChannelHandler is provided with a ChannelHandlerContext object. A ChannelHandler is supposed to interact with the ChannelPipeline it
+belongs to via a context object. Using the context object, the ChannelHandler can pass events upstream or downstream, modify the pipeline
+dynamically, or store the information (attachment) which is specific to the handler.
+
+**Because the handler instance has a state variable which is dedicated to one connection, you have to create a new handler instance for each
+new channel to avoid a race condition where a unauthenticated client can get the confidential information**
+
+
+子接口
+
+    ChannelDownstreamHandler
+    ChannelUpstreamHandler
+    LifeCycleAwareChannelHandler
+
+框架默认的实现类
+
+    SimpleChannelUpstreamHandler      //ChannelUpstreamHandler
+    IdleStateHandler
+    IdleStateHandler
+
+    SimpleChannelDownstreamHandler
+    HttpClientCodec
+    HttpContentCompressor
+    HttpContentEncoder,
+    HttpMessageEncoder
+    HttpRequestEncoder
+    HttpResponseEncoder
+    HttpServerCodec
+    IdleStateAwareChannelHandler
+    OneToOneEncoder
+
+    SimpleChannelHandler
+
+    BufferedWriteHandler //LifeCycleAwareChannelHandler
+    HttpContentCompressor
+    HttpContentDecoder
+    HttpContentDecompressor
+    HttpContentEncoder
+    HttpMessageDecoder
+    HttpRequestDecoder
+    HttpResponseDecoder
+    IdleStateHandler
+
+
+####ChannelHandlerContext
+
+Enables a ChannelHandler to interact with its ChannelPipeline and other handlers. A handler can send a
+ChannelEvent upstream or downstream, modify the ChannelPipeline it belongs to dynamically.
+
+Please note that a ChannelHandler instance can be added to more than one ChannelPipeline. It means a single
+ChannelHandler instance can have more than one ChannelHandlerContext and therefore the single instance can
+be invoked with different ChannelHandlerContexts if it is added to one or more ChannelPipelines more than once.
 
 * TCP NIO Channels: NioClientSocketChannelFactory and NioServerSocketChannelFactory
 * UDP NIO Channels: NioDatagramChannelFactory
 * TCP OIO Channels: OioClientSocketChannelFactory and OioServerSocketChannelFactory
-* UDP OIO Channels: OioDatagramChannelFactory 
+* UDP OIO Channels: OioDatagramChannelFactory
 * HTTP Client:  HttpTunnelingClientSocketChannelFactory
-* Local Channels: DefaultLocalClientChannelFactory and DefaultLocalServerChannelFactory 
+* Local Channels: DefaultLocalClientChannelFactory and DefaultLocalServerChannelFactory
+
+
+每到一个新的连接到达, 就创建一个 channel, ChannelPipeline 附着与 channel, 处理从 channel 进来或出去的数据.
+
+ChannelPipelineFactory 用于创建一个 ChannelPipeline. ChannelPipeline 由一系列
+ChannelHandler 按照顺序组成, 不同的 ChannelEvent 对应不同的 ChannelHandler
+
+
 
 ###Exectors
 
@@ -63,7 +376,7 @@ Channel 的创建有一个专门抽象的 ChannelFactory 类。工厂做什么�
 内容抽象，位于 Channel 的两端，与 Channel 直接连接，既可以向 Channel 中写数据，也可以从 Channel 中读数据。由 Worker Threads 管理。
 
 * ChannelBuffer
-* 
+*
 ####Encode Decode
 
 由于 Channle 传输的是二进制流，所以发送端必须将你要传输的内容进行编码为某种二进制流，反之，接受端要将二进制流解码为可以使用的对象。
@@ -83,10 +396,10 @@ Netty SDK提供了不同种类的编解码器，例如Google ProtoBufs、Compres
 
 ###NIO  netty  Jboss 关系
 
-NIO仅仅是一个网络传输框架，而Netty是一个网络应用框架，包括网络以及应用的分层结构。
+NIO 仅仅是一个网络传输框架，而Netty是一个网络应用框架，包括网络以及应用的分层结构。
 
-Netty3.x 包名为 org.jboss.netty，是 JBoss.org 的一部分
-Netty4.0 包名从org.jboss.netty改为io.netty，不在是JBoss.org的一部分了。 具体变化参考[这里](http://www.oschina.net/translate/netty-4-0-new-and-noteworthy?print)
+Netty3.x 包名为 org.jboss.netty, 是 JBoss.org 的一部分
+Netty4.0 包名从 org.jboss.netty 改为 io.netty，不在是 JBoss.org 的一部分了. 具体变化参考[这里](http://www.oschina.net/translate/netty-4-0-new-and-noteworthy?print)
 
 ###jetty MINA
 
