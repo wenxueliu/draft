@@ -187,3 +187,145 @@ CLEAN :
 人生有限，要聚集你的精力到一件事情上，做到最好！
 
 
+##例子
+
+　　建立一个测试目录，在测试目录下建立一个名为sub的子目录
+
+　　$ mkdir test
+
+　　$ cd test
+
+　　$ mkdir sub
+
+　　在test下，建立a.c和b.c2个文件，在sub目录下，建立sa.c和sb.c2 个文件
+
+　　建立一个简单的Makefile
+
+　　src=$(wildcard *.c ./sub/*.c)
+
+　　dir=$(notdir $(src))
+
+　　obj=$(patsubst %.c,%.o,$(dir) )
+
+　　all:
+
+　　@echo $(src)
+
+　　@echo $(dir)
+
+　　@echo $(obj)
+
+　　@echo "end"
+
+
+执行结果分析：
+
+第一行输出：
+
+　　a.c b.c ./sub/sa.c ./sub/sb.c
+
+wildcard把 指定目录 ./ 和 ./sub/ 下的所有后缀是c的文件全部展开。
+
+第二行输出：
+
+　　a.c b.c sa.c sb.c
+
+notdir把展开的文件去除掉路径信息
+
+第三行输出：
+
+　　a.o b.o sa.o sb.o
+
+在$(patsubst %.c,%.o,$(dir) )中，patsubst把$(dir)中的变量符合后缀是.c的全部替换成.o，
+
+任何输出或者可以使用
+
+　　obj=$(dir:%.c=%.o)
+
+效果也是一样的。这里用到 makefile 里的替换引用规则，即用您指定的变量替换另一个变量。
+
+它的标准格式是
+
+　　$(var:a=b) 或 ${var:a=b}
+
+它的含义是把变量var中的每一个值结尾用b替换掉a
+
+###wildcard 扩展通配符
+
+　　SRC = $(wildcard *.c)
+
+等于指定编译当前目录下所有.c文件，如果还有子目录，比如子目录为inc，则再增加一个wildcard函数，象这样：
+
+　　SRC = $(wildcard *.c) $(wildcard inc/*.c)
+
+也可以指定汇编源程序：
+
+　　ASRC = $(wildcard *.S)
+
+###notdir 去除路径
+
+###patsubst 替换通配符
+
+
+格式：$(patsubst <pattern>,<replacement>,<text> )
+
+名称：模式字符串替换函数——patsubst。
+
+功能：查找<text>中的单词（单词以“空格”、“Tab”或“回车”“换行”分隔）是否符合模式<pattern>，如果匹配的话，
+则以<replacement>替换。这里，<pattern>可以包括通配符“%”，表示任意长度的字串。如果<replacement>中也包含“%”，
+那么，<replacement>中的这个“%”将是<pattern>中的那个“%”所代表的字串。（可以用“\”来转义，以“\%”来表示真实含义的“%”字符）
+
+返回：函数返回被替换过后的字符串。
+
+示例：
+
+　　$(patsubst %.c,%.o,x.c.c bar.c)
+
+把字串“x.c.c bar.c”符合模式[%.c]的单词替换成[%.o]，返回结果是“x.c.o bar.o”
+
+make中有个变量替换引用
+
+对于一个已经定义的变量，可以使用“替换引用”将其值中的后缀字符（串）使用指定的字符（字符串）替换。
+格式为“$(VAR:A=B)”（或者“${VAR:A=B}”），意思是，替换变量“VAR”中所有“A”字符结尾的字为“B”结尾的字。
+“结尾”的含义是空格之前（变量值多个字之间使用空格分开）。而对于变量其它部分的“A”字符不进行替换。例如：
+
+　　foo := a.o b.o c.o
+
+　　bar := $(foo:.o=.c)
+
+在这个定义中，变量“bar”的值就为“a.c b.c c.c”。使用变量的替换引用将变量“foo”以空格分开的值中的所有的字
+的尾字符“o”替换为“c”，其他部分不变。如果在变量“foo”中如果存在“o.o”时，那么变量“bar”的值为“a.c b.c c.c o.c”
+而不是“a.c b.c c.c c.c”。
+
+它是patsubst的一个简化，那么到底是简化成了什么样子呢
+
+　　CROSS=
+
+　　CC=$(CROSS)gcc
+
+　　CFLAGS= -Wall
+
+　　LDFLAGS=
+
+　　PKG = src
+
+　　SRCS = $(wildcard $(PKG)/inc/*.c) $(wildcard $(PKG)/*.c)
+
+　　BOJS = $(patsubst %.c,%.o,$(SRCS))
+
+　　#BOJS = $(SRCS: .c = .o)
+
+　　#%.o:%.c
+
+　　# $(CC) -c $< $(CFLAGS) -o $@
+
+　　.PHONY:main
+
+　　main:$(BOJS)
+
+　　-$(CC) -o $@ $(CFLAGS) $^ $(LDFLAGS)
+
+　　-mv main ./myfile
+
+起初使用的是变量替换引用的方式，但是却始终不生成中间的.o文件，但是使用 patsubst 后，一切正常了.
+
