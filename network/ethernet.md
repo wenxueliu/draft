@@ -9,92 +9,334 @@
 当主机有 1 个以上的网卡时, Linux 会将多个网卡绑定为一个虚拟的 bonded 网络接口, 对 TCP/IP 而言只存在一个 bonded 网卡.
 多网卡绑定一方面能够提高网络吞吐量, 另一方面也可以增强网络高可用. Linux 支持 7 种[Bonding模式](http://www.cloudibee.com/network-bonding-modes/):
 
-    Mode 0 (balance-rr)  Round-robin策略，这个模式具备负载均衡和容错能力
+    Mode 0 (balance-rr)  Round-robin策略，这个模式具备负载均衡和容错能力, 但需要"Switch"支援及设定。
     Mode 1 (active-backup)  主备策略，在绑定中只有一个网卡被激活，其他处于备份状态
     Mode 2 (balance-xor)  XOR策略，通过源MAC地址与目的MAC地址做异或操作选择slave网卡
     Mode 3 (broadcast)  广播，在所有的网卡上传送所有的报文
     Mode 4 (802.3ad)  IEEE 802.3ad 动态链路聚合。创建共享相同的速率和双工模式的聚合组
     Mode 5 (balance-tlb)  Adaptive transmit load balancing
-    Mode 6 (balance-alb)  Adaptive load balancing
+    Mode 6 (balance-alb)  平衡负载模式，有自动备援，不必"Switch"支援及设定。
+
+常用三种 0,1,6
+
+    mode=0 : 中断任意一条链路或恢复链路，网络0丢包
+    优点 : 流量提高1倍
+    缺点 : 需要接入同一交换机做聚合配置，无法保证物理交换机高可用(Cisco似乎有解决方案？）
+
+    mode=1 : 中断任意一条链路丢失1-3个包(秒)，恢复链路时0丢包
+    优点 : 交换机无需配置
+    缺点 : 如上
+
+    mode=6 : 中断任意一条链路0丢包，恢复链路时丢失10-15个包(秒)
+    优点 : 交换机无需配置，流量提高1倍
+    缺点 : 恢复链路时丢包时间过长
 
 详细的说明参考内核文档 [Linux Ethernet Bonding Driver HOWTO](https://www.kernel.org/doc/Documentation/networking/bonding.txt).
-我们可以通过 cat /proc/net/bonding/bond0 查看本机的Bonding模式:
 
-$ cat /proc/net/bonding/bond0
+##IOAT概述
+
+ioat很复杂，由一系列特性组成，包括IntMod，quick-data，rss，dca，offload，dmac，MSI-X等等，每一种特性都有其应用场合。注意到这些
+特性在多cpu环境中是相互影响的，如果不假思索的堆积这些特性，反而会弄巧成拙！首先先看一下这些特性的大致原理，详细原理需要参阅8257X
+以及Intel IOAT的datasheet：
+
+###interrupt moderation
+
+IntMod 的原理很简单, 首先 IntMod 有一个假设，它假设使用千兆网卡传输的都是密度很大的包，因此每到一个包都产生一个中断的话，会造成
+中断很频繁，严重情况下会有中断风暴，这类似于一次DOS； 其次， 鉴于之前的软件解决方式 NAPI 的效益有一个难以突破的上限，因此有必要
+提出一种硬件的解决方案，这就是IntMod； 再次，由于还要兼顾不连续小包的情况，也即密度很小的小包接收的情况，因此 IntMod 不能做死，
+要可配置，并且最好支持自适应， 这就是最终的 Intel 千兆网卡 8257X 系列的 IntMod 版本。
+
+###RSS
+
+多接收队列支持的核心。这个原理也很简单。在硬件层次将数据包分类，然而不进行任
+何策略化转发，它只是提供了一个接口，使得驱动程序等软件可以 pick up 出不同的
+队列中的数据包，然后由软件实施策略。以往的单一队列网卡，驱动程序和协议栈软件
+需要进行大量计算才能将数据包归并到某一个数据流(比如netfilter的ip_contrack的
+实现逻辑)，现在使用RSS机制，驱动程序可以直接获取结果了。 我们常常认为，按照
+分层的思想，网卡硬件是不应该认识数据流的，它只应认识数据帧，然则 Intel 的千
+兆网卡突破了这个理论原则，这也是理论应用于工业的常用方法。
+
+###DMAC：
+
+同上面的IntMod原则一样，DMAC 也是为了增加吞吐量，降低中断开销提出的方案，它将 DMA 请求聚集到一定程度才真正请求一次，在降低 DMA
+中断次数的同时也减少了总线事务开销，然而可能因此增加了延迟。
+
+###DCA
+
+DMA 我们都很熟悉，DCA 原理一样，只不过是"直接cache访问"。PCIe 网卡传输到内存的数据首先被 cpu 系统总线的 snoop 周期得到，如果
+cache 命中则直接操作 cache 不再操作 memory 了。可是 DCA 在多 cpu 的情况下十分复杂，有时由于软件设计不当“cache一致性”的开销会
+抵消掉相当大一部分 DCA 的性能提升。
+
+###OffLoad：
+
+这个设计原则也是在底层增加了上层逻辑，虽然理论上很丑陋，然而这是工业界的做法，只为提高性能。offload 将很多消耗 cpu 的操作分担给
+了网卡芯片，比如tcp分段，校验码计算，udp分段，小分段在接收时的重组...
+
+###MSI-X：
+
+PCIe的特性之一。总之，MSI-X 使用软件来分配中断号，这样就避免了由于硬件中断线有限而导致的中断同步化。准确地说，IOAT 中的 msi-x
+特性可以为每一个 rss 接收队列都分配一个中断号，大大优化了中断性能和DMA性能。
+
+##接收包是大包还是小包的问题
+
+###大包情况：
+
+如果网卡接收的数据包普遍都是大包，并且是短间隔的连续接收，那么 82575/6 网卡的 interrupt moderation 将会带来很好的效果，从而避免了
+中断风暴。它设置一个阀值 N，每秒只发送 N 个中断给 cpu，在中断还没有发送期间，网卡可以积累一些数据包，当下一个中断发送的时候，
+集中由cpu处理。
+
+###小包情况：
+
+如果网卡接收的数据包是小包，并且密度很小，那么使用阀值 N 将会严重加大包延迟，因此如果存在大量小包需要处理，关闭 IntMod。这种情
+况发生在大量tcp用户连接的情况，如果关闭了IntMod，cpu 利用率会上升，如果你的 cpu 不是很差，应该还是可以负担的，如果很差，那么就
+不配使用 Intel 的 82574 以上的网卡，换 CPU 和主板吧。
+
+###自适应
+
+如果能将 IntMod 调节成自适应，理论上是很好的，也就是说当连续大包接收的时候，逐渐增加 IntMod 的阀值，如果接收密度变小，则相应减小之。
+然而如果大密度的大包中间夹杂着少量的小包，则大包的性能提升将会吃掉对小包的处理。因此这种自适应效果在这种大小不等的混合包环境下并不
+是很好。
+
+实际上压根儿就不能指望网卡里面实现的硬件自适应能适应各种情况，毕竟硬件的灵活性远远不如软件。
+
+###LLI选项
+
+幸运的是，82575/X 网卡实现了一个“检波”机制，它实现了基于包特征来决定是否立即发送中断的机制。 不幸的是，并不是各个版本的驱动程序都
+支持这个配置。这又是硬件和软件不协调的例子。
 
 
-###Bonding 创建
+##转发和本地处理的问题
 
-$ cat /etc/sysconfig/network-scripts/ifcfg-bond0
+###转发情况
 
-    DEVICE=bond0
-    IPADDR=192.168.1.12
-    NETMASK=255.255.255.0
-    GATEWAY=192.168.1.1
-    USERCTL=no
-    BOOTPROTO=none
-    ONBOOT=yes
+如果转发，且存在大于两块的网卡，则将所有中断固定在一个 CPU 上 ，或者根据路由表，将统计意义上的入口和出口的网卡中断绑在同一个 CPU 上，
+原因是 DCA 在单个 CPU 上的效果最好(没有cache一致性开销)，加之对于转发的数据包，数据包的处理全部在软中断中进行，和进程无关，因此最好
+将数据包从进入协议栈到出去协议栈的过程全部布在同一个 CPU 上。 但这不太适合运行动态路由协议的机器。这是因为 DCA 的效果完全取决于 cache
+的使用方式。
 
-$ cat /etc/sysconfig/network-scripts/ifcfg-eth0
+RSS 实际上在转发的情况下，最好不同队列中断不同 CPU，并且注意数据包在本地的“card1-routing-card2”使用同一个 CPU 处理是最佳的。(附：两次
+可能的跳跃：1.硬件接收包到发送中断可能会在多 CPU 上跳跃；2.软中断处理完唤醒用户态进程可能存在进程在多CPU上跳跃，无论哪个跳跃都不好，
+都会部分抵消访问cache的收益 )
 
-    DEVICE=eth0
-    BOOTPROTO=none
-    ONBOOT=yes
-    # Settings for Bond
-    MASTER=bond0
-    SLAVE=yes
+###本地处理情况
 
-$ cat /etc/sysconfig/network-scripts/ifcfg-eth1
+RSS 在本地处理的包上起的作用更大。但是前提是用户态应用程序一定要配合这种多 CPU 多接收队列的场景。如果固定的一个队列中断固定的一个CPU，
+但是应用程序却没有运行在这个 CPU 上，那么虽然协议栈的处理充分使用了 DCA，最终将数据送达用户态的时候，可能还会导致cache刷新(如果进程被
+唤醒在该处理协议栈软中断的 CPU 上，则谢天谢地，遗憾的是，我们对是否如此无能为力，一切希望要寄托在 linux 内核进程调度器的开发者们身上)，
+反之，如果我们将一个进程绑定在一个固定的 CPU 上，那么多个队列中断固定的多个 CPU 就没有了意义，因此最好巧妙设计多线程程序，每一个 CPU
+上运行一个，每一个线程处理固定一个或者几个队列。然而这很难，毕竟 RSS 机制只是保证了同一个流 hash 到一个 queue，然则并没有任何配置指示
+它必须 hash 到哪个队列，hash 的结果和源地址/源端口/目的地址/目的端口/算法有关。
 
-    DEVICE=eth1
-    BOOTPROTO=none
-    ONBOOT=yes
-    # Settings for Bond
-    MASTER=bond0
-    SLAVE=yes
+###LRO问题
 
-$ cat /etc/sysconfig/network-scripts/ifcfg-eth2
+转发的情况下，如果出口的 MTU 过小，然而入口启用了 LRO，那么重组后的大包在发出之前会被重新分段。因此对于转发的情况，要禁用掉 LRO。对于
+本地处理的情况，启用 LRO 无疑是不二的选择。然而如果一半是本地处理，一半是 routing 的，那该怎么办呢？实际上毫无办法！
 
-    DEVICE=eth2
-    BOOTPROTO=none
-    ONBOOT=yes
-    # Settings for Bond
-    MASTER=bond0
-    SLAVE=yes
+##多cpu和多队列的问题
 
-文件 /etc/modprobe.conf 增加如下:
+###操作系统级别的中断的负载均衡
 
-    # bonding commands
-    alias bond0 bonding
-    options bond0 mode=1 miimon=100
+####转发：
 
-$ modprobe bonding
+多个 CPU 均衡处理每一个接收队列，对于 TCP 的情况，会造成 TCP 段的并行化，在 TCP 协议层面上会产生重组和重传开销，特别是 TCP 端点不支持
+sack 的情况下。如果没有开启LRO，对于大量大包的 TCP 分段，情况会更加严重，虽然 TCP 的 MSS 测量会减轻这种影响，但是终究无法弥补！
 
-$ service network restart
+####本地处理：
 
-$ cat /proc/net/bonding/bond0
+如果是发往本地用户态进程的包，即使中断在多 CPU 上负载均衡了，DCA 也会有效，但是由于无法确定进程将会在哪个 CPU 上被唤醒，因此对于到达
+同一进程的数据包而言, 中断的负载均衡将还是会导致 cache 刷新
 
-    Ethernet Channel Bonding Driver
-    Bonding Mode: adaptive load balancing
-    Primary Slave: None
-    Currently Active Slave: eth2
-    MII Status: up
-    MII Polling Interval (ms): 100
-    Up Delay (ms): 0
-    Down Delay (ms): 0
-    Slave Interface: eth2
-    MII Status: up
-    Link Failure Count: 0
-    Permanent HW addr: 00:13:72:80: 62:f0
+###一个结论
 
+在最保险的情况下，退回到单CPU模式(通过grub的kernel参数maxcpus=1)，IOAT的性能会体现出来，如果开启了多个cpu，有时候性能反而下降！
 
-$ ifdown eth0
+###多个流和单个流
 
-$ cat /proc/net/bonding/bond0 
+如果服务器处理多个流，IOAT 的作用将更好的发挥，反之如只处理一个流，性能反而会因 IOAT 而下降。特别是 IntMod 的影响尤大，IntMod 本来是为
+增加吞吐量而引入的特性，它在增加总吞吐量的同时也会增加单个流的延迟。对于只有一个流的环境而言，增大了单包的延迟，也就意味着单流吞吐量的
+降低。
 
-检查 "Current Active slave".
+##使用bonding进行流过滤
 
-从不同的机器 ping bond0, 期间 ifdown eth0 , ifdown eth1, ping 一直能够成功
+###bonding 驱动可以在软件层面上实现队列分组
+
+前提是使用 bonding 的负载均衡模式且使用 layer2+3 xmit_hash_policy(与之相连的 switch 同时也需要相应的配置，使之支持和本机相同的均衡模式)，
+有了软件的这种准备，网卡硬件将会更好的处理多队列，因为接收包都是从 switch 发来的，而 switch 已经有了和本机一致的xmit_hash_policy策略，
+这样 8257X 接收到的数据包就已经被 switch 过滤过了。虽然将多个 8257X 绑在一起同时配置 xmit_hash_policy 策略看起来有些复杂，然而这种过滤
+方式无疑使 8257x 的 RSS 更加确定化了，我们说，如果硬件无法完成复杂策略的设置，那么软件来帮忙！ 在 RSS 中，硬件的策略确实很粗糙，它只管
+到接收队列对应的中断，而无法和应用程序发生关联，使用了 bonding 之后，这种关联可以通过软件来确立，需要修改的仅仅是为 bonding 增加一个
+ioctl 参数或者 sysfs 属性。
+
+##驱动程序版本问题
+
+并不是说硬件有什么特性，软件马上就能实现其驱动，如果真的是这样，驱动程序就不需要有版本号了。另外，选择驱动的时候，一定要知道自己网卡的型号，
+这个比较容易把人弄晕，我们所说的 8257X 指的是网卡控制器的型号而非网卡芯片的型号，这些控制器可以独立存在，也可以集成在主板的各个“桥”中。
+而网卡芯片(adapter)的型号则诸如以下的描述：PRO/1000 PT Dual Port。往往一个控制器可以支持很多的网卡芯片。
+
+###e1000 与 e1000e驱动
+
+和 e1000 一样，e1000e 驱动没有集成 IOAT 的大多数特性，除了一些 offload 特性。这说明如果想使用 IOAT 特性以提高性能，这几个驱动明显是不行的，
+不过，e1000 系列驱动实现了 NAPI，这是一种软件方案来平衡 CPU 和网卡芯片的利用率。另外这些驱动实现以太网卡的全部传统特性，比如速率协商方式，
+双工方式等等。
+
+需要注意的是，驱动和网卡芯片是对应的，然而并不是一一对应的，一个驱动往往对应一系列的芯片，总的来讲 e1000 对应的基于PCI和PCI-X的千兆卡，
+而 e1000e 对应的是支持 PCIe 的千兆卡
+
+###igb-1.2驱动
+
+igb 系列网卡驱动对应的是 82575/82576 等千兆卡，当然这些卡支持了 IOAT 的大部分特性。1.2 版本的 igb 驱动支持以下的配置：
+
+a.InterruptThrottleRate： 定义了 IntMod 的行为，可选值为：0,1,3,100-100000。如果是0，那么和传统网卡一样，收到包后立即中断 CPU，
+如果是 1 或者3，那么就是自适应模式，网卡会根据包的接收情况自动调整中断频率，然而正如我上面的分析，自适应模式有时工作的并不是
+很好。如果是 100 以上的一个数，那么中断频率将设置成那个值。
+
+b.LLIPort ： 此配置和下面的两个配置都是 LLI 的配置，可以执行手动“检波”而并不使用 IntMod 的自适应机制。此配置可以配置一个端口，到达该端口的包
+可以马上中断CPU。
+
+c.LLIPush： 使能或者禁用，使能的话，所有小包到来，马上中断 CPU，然而文档中并没有说明其判断的标准和使用的算法。
+
+d.LLISize： 配置一个大小，所有小于这个大小的包到来，立即中断CPU。
+
+e.IntMode： 注意和IntMod的区别，该选项仅仅是告知驱动如何来配置中断的模式，具体来说无非就是基于中断线的中断，还有 MSI 以及 MSI-X 的中断。
+
+f.LROAggr： 配置一个阀值，大于该值将不再实施 LRO。
+
+虽然82575/6实现了 RSS，这个1.2版本的驱动却没有体现其配置，因此有必要升级驱动，毕竟 RSS 是 IOAT 的重头戏。
+
+5.4.igb-3.0驱动
+
+该版本的驱动是比较新的，除了支持 1.2 版本的配置之外，还支持以下配置(暂不考虑虚拟化和 NUMA 的特性)：
+
+a.RSS： 配置多接收队列，可选值为0-8，默认为1，如果是0，则动态配置队列数量，数量选择最大队列和 CPU 数量的最小值，若非0，则配置成那个值。
+
+b.QueuePairs： 配置在接收和发送方面是否使用同一个中断。
+
+c.DMAC： 配置是否启用聚集DMA。
+
+##Linux内核版本问题
+
+对于内核相关的问题，有两点需要注意，其一是多路IO模型(多路 IO 模型对于 routing 的包没有影响，只影响本地处理的包)，其二是本地唤醒。
+
+###Linux 2.4内核
+
+2.4内核没有epoll，只能使用 select 模型，或者打上 epoll 补丁，使用 select 模型在大量连接的时候会有相当大的开销耗费在 select 本身上，
+然而 8257X 千兆卡的优势正是处理大量连接，因此最好升级内核到 2.6
+
+###Linux 2.6.23之前的内核
+
+在多 CPU 情况下，这些版本的内核在唤醒进程 p 的时候，如果需要在本 CPU 上唤醒，则将所有工作全部交给调度器来完成，如果调度器并不认为
+下一个运行的进程是 p，那么p仍然需要等待，等待会导致 cache 变凉！ 我们知道 8257X 千兆卡使用了 DCA 直接操作cache，并且可以巧妙的设置
+中断和 CPU 的亲和性，保证从中断到协议栈的传输层处理都在一个 CPU 上进行，如果唤醒等待数据的进程 p 后，p 仍然在该 CPU 上运行并且马上，
+那无疑对 cache 的利用率是最高的。然而无法保证内核调度器一定会这样做。因此如果该内核作为网关产品的一部分只运行网络应用的话，最好修改
+一下内核调度器代码，添加一个本地唤醒内核 API。也即在 data_ready 回调函数中提升要唤醒进程的动态优先级，并且强制唤醒在本 CPU，然后调用
+resched_task。
+
+###Linux 2.6.23之后2.6.30之前的内核
+
+这些版本的内核调度器使用了CFS算法，对于本地唤醒而言要好很多。
+
+###Linux 2.6.30 之后 2.6.33 之前的内核
+
+优化了网络协议栈和CFS算法。然而还是可以有针对网络性能优化的定制。Linux 主线内核只是一个通用的内核，完全可以通过定制从而使其在某个子
+领域性能达到最优化。
+
+###Linux 2.6.33之后的内核
+
+新版本的内核源码树中集成了 Intel I/OAT 的驱动
+
+##cpu，网卡，芯片组的协调
+
+###PCI和PCI-X
+
+采用这种总线的网卡是比较 old 的，我们知道，PCI 总线分为不同的标准，比如 33-MHz，66-MHz，133-MHz，100-MHz 等，当我们看到网卡是 133M 的，
+而 PCI 桥则是 33M 的，那么很明显，我们需要换主板了。这个速率在 PCI 设备的配置空间中，通过 lspci -vv 可以看到：
+
+Status: Cap+ 66MHz-...
+
+###PCIe
+
+对于 PCIe 而言，由于它是串行的，不再以速率作为标准了，而是以 lane 作为标准，常见的有 x4，x8，x16 等，什么是 lane 呢？lane 实际上就是一对
+4 条的线缆，分别发送和接收，其中发送两根，接收两根，这两个线缆信号是差分的，因此可以抗干扰。如果我们发现网卡是 x16 的，而它的上游桥是 x4
+的，那么很显然，我们找到了瓶颈。虽然一般不会出现这种情况，但是还是确认一下好，通过 lspci -vv 可以看到 lane 信息：
+
+LnkCap: Port #3, Speed 2.5GT/s, Width x4,...
+
+然则如何得到主板 pci/pcie 设备的拓扑图呢？ 又是怎么知道谁是网卡/网卡控制器的上游呢？见附录。
+
+###多核CPU和多CPU以及超线程CPU
+
+不要把多核CPU，超线程CPU和多CPU混淆， 在 cache 的利用上，三种架构的表现完全不同，这涉及到有没有共享 cache 的问题。另外超线程 CPU 有时候
+确实会降低而不是提高性能，因为超线程 CPU 本质上只有一套计算资源，切换开销将可能影响性能，比如，有的操作系统的调度器会将一个进程唤醒到同
+CPU 的另一个超线程上，这就要进行一次切换。Linux内核对此进行了一些处理最大限度避免这种情况，详见调度器的 dependent_sleeper 函数，然而不能
+依赖这种处理，并不是每个版本的内核都能有效避免超线程抢占带来的切换问题的。因此最好还是使用多核 CPU 或者多 CPU，并且在绑定用户进程的时候，
+最好使共享数据的进程绑在一个 CPU 的多个核上，这样它们就可以使用共享的 cache 了(当然前提是你要知道你的cpu是怎样布局cache的)。
+
+超线程 CPU 在线程密集的情况下，性能反而会下降，比关闭超线程的性能还低下，原因在于大量的开销用于同 CPU 的smt之间的切换了！
+
+###CPU利用率和IOAT
+
+IOAT中的offload，IntMod，DMAC 都可以降低 CPU 利用率，将计算移入网卡芯片，如果你发现网络一路畅通，CPU 利用率很低，那很有可能是过度使用
+这些 IOAT 特性了，既然不是 CPU 的瓶颈，网卡又很强悍，网络上又没有瓶颈，那一定是没有配置好软件环境。
+
+芯片组，cpu，网卡控制器芯片，网卡芯片，内存控制器，内存大小，操作系统，网线质量只有“阻抗匹配”才能获得好的性能， 否则任何一个环节都可能
+成为瓶颈，甚至降低性能，即 1+1=-1。
+
+##官方建议
+
+肯定是Intel的官方建议是最好的了。Intel实际上提供的是一整套解决方案，如果我们全部买它们的硬件，部署它们的软件工具，并请 Intel 的工程师
+现场安装调试，那无疑能获得最佳的性能
+
+###Reduce Interrupt Moderation Rate to Low, Minimal, or Off
+
+Decreasing Interrupt Moderation Rate will increase CPU utilization.
+
+ethtool -C eth1 rx-usecs 0 |设置igb参数：InterruptThrottleRate=1,1,1,1
+
+###Enable Jumbo Frames to the largest size supported across the network (4KB, 9KB,or 16KB)
+
+Note     Enable Jumbo Frames only if devices across the network support them and are configured to use the same frame size.
+
+###Disable Flow Control
+
+Disabling Flow Control may result in dropped frames.
+
+###Increase the Transmit Descriptors buffer size
+
+Increasing Transmit Descriptors will increase system memory usage.
+
+###Increase the Receive Descriptors buffer size
+
+Increasing Receive Descriptors will increase system memory usage.
+
+###Tune the TCP window size
+
+Optimizing your TCP window size can be complicated as every network is different. There are many documents that are available on the Internet
+that describe the considerations and formulas that you should use in determining your window size. Using your preferred search engine you can
+find a significant amount of information on TCP window size tuning by searching for "TCP tuning".
+
+###停止系统的中断的负载均衡，手工配置基于 RSS 的中断
+
+###最保险的选择：Boot the System Into Single-CPU Mode
+
+all the advantages of multi-core systems are eliminated.
+
+配置kernel启动参数：maxcpus=1.
+
+###其它配置
+
+很明显，系统内核的网络参数是一定要调整的，问题是调整到哪个值，这完全取决于你的系统。
+
+* sysctl调整网络参数
+* 别让 bonding 扯了后腿
+* IntMod 配置成一个超过 100 的数字，并且设置 LLI 实行手动“检波”。
+
+bonding是好的，bonding+千兆卡能带来性能最优化，然而别忘了，另一端还有switch，扯后腿的可能就是switch。
+
+充分利用所有的芯片性能的前提是重新组合配置你的软件环境，这是一个很复杂的工作。这是一个求拥有N(N>100)个自变量的函数f(x1,x2,...xN)的极值问题，
+并且我们还不明确知道函数体是什么，只能根据上述的论述给出个大概。采用向量分析的方式是徒劳的，因为这些自变量不是正交的，相反，它们是互相影响的，
+最后也只能是通过采集性能数据的方式找出一个满意的结果了。
+
+总而言之，IOAT 是个好东西，然而却不能随意堆积。
 
 ##RPS and RFS
 
@@ -493,6 +735,7 @@ $ sudo ethtool -k eth0 | grep offload
 [大量小包的CPU密集型系统调优案例一则](http://blog.netzhou.net/?p=181)
 [linux kernel 2.6.35中RFS特性详解](http://www.pagefault.info/?p=115?)
 http://blog.chinaunix.net/uid-20662820-id-3850582.html
+http://blog.csdn.net/dog250/article/details/6462389
 
 ##附录
 
@@ -1114,3 +1357,38 @@ submitted by Ben Hutchings (bwh@kernel.org)
 Authors:
 Tom Herbert (therbert@google.com)
 Willem de Bruijn (willemb@google.com)
+
+
+##网卡资料
+
+1.大量调优建议以及技术白皮书
+http://www.intel.com/technology/comms/unified_networking/index.htm
+2.各类网卡/控制器芯片的说明：
+http://www.intel.com/p/en_US/support?iid=hdr+support
+注意：Select a Family->Network Connectivity|Select a Line->Intel@Server Adapters|Select a Product->[你的芯片]即可获得大量文档和更多的链接。
+3.各类网卡控制器芯片文档
+http://www.intel.com/products/ethernet/resource.htm
+注意：和2一样，选择你需要的。
+4.所有网卡资料总的入口
+http://www.intel.com/products/ethernet/overview.htm
+5.I/OAT资料
+http://www.intel.com/network/connectivity/vtc_ioat.htm
+http://www.intel.com/technology/advanced_comm/ioa.htm
+6.Linux内核更新文档以及大量链接
+http://kernelnewbies.org/Linux_2_6_34
+注意：版本号跟在最后，比如需要2.6.39的资料，URL最后为Linux_2_6_39
+7.Linux内核开发文章
+http://lwn.net/Articles/
+8.内核官方网站
+http://www.kernel.org/
+9.各种网卡驱动程序的README文件
+10.《Improving Measured Latency in Linux for Intel 82575/82576 or 82598/82599 Ethernet Controllers》链接丢失
+11.《Assigning Interrupts to Processor Cores using an Intel 82575/82576 or 82598/82599 Ethernet Controller》链接丢失
+12.各种网卡芯片的datasheet，链接在4中可以找到
+13.Cisco技术支持，包含大量网络设计的文档
+http://www.cisco.com/cisco/web/support/index.html
+14.Cisco的blog，内容就不用说了，经常看
+http://blogs.cisco.com/
+15.《The Transition to 10 Gigabit Ethernet Unified Networking: Cisco and Intel Lead the Way》名副其实的！
+http://download.intel.com/support/network/sb/intel_cisco_10gunwp.pdf
+16.《User Guides for Intel Ethernet Adapters》链接在Intel官网 
