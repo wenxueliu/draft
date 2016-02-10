@@ -1,6 +1,19 @@
 
 ## TCP 调优
 
+###为什么调优
+
+1. 设定目标, 调优要达到的目的.
+2. 设定实现目标关注的指标, 速度, 延迟, TPS ...
+3. 理解每次调优的意义(理解参数背后的机理)
+4. 测试, 测试, 测试, 重要的事情说三遍, 通过测试来验证是否达到目标
+5. 记录每一次测试过程
+
+###误区
+
+不要过于依赖测试工具, 有时候测试工具的结果过于理想化, 但可以作为参考
+
+
 调优的前提是诊断出问题, 而不是对内核参数的随意或猜测性修改. 犹如名医诊断病人,
 能通过望, 闻, 问, 切对诊断病人的病情, 之后对症下药. 网络调优也是如此, 只有
 发现问题, 仔细诊断问题根源, 之后解决问题. 下面就谈谈, 网络的望,闻, 问, 切的
@@ -403,20 +416,23 @@ SO_RCVBUF 是具体连接的值, 受限于 net.core.rmem_max, 最小为 256.
 * 默认值 根据内存计算
 * 建议值 786432 1048576 1572864
 
-low: 当 TCP 使用了低于该值的内存页面数时, TCP 不会考虑释放内存. 即低于此值没有内存压力. 
+low: 当 TCP 使用了低于该值的内存页面数时, TCP 不会考虑释放内存. 即低于此值没有内存压力.
 (理想情况下, 这个值应与指定给 tcp_wmem 的第 2 个值相匹配 - 这第 2 个值表明, 最大页面大
  小乘以最大并发请求数除以页大小 (131072 300 / 4096). )
 
-pressure: 当TCP使用了超过该值的内存页面数量时, TCP试图稳定其内存使用, 进入pressure模式, 
+pressure: 当TCP使用了超过该值的内存页面数量时, TCP试图稳定其内存使用, 进入pressure模式,
 当内存消耗低于 low 值时则退出pressure状态. (理想情况下这个值应该是 TCP 可以使用的总缓冲
 区大小的最大值 (204800 300 / 4096).  )
 
-high: 允许所有tcp sockets用于排队缓冲数据报的页面量. (如果超过这个值, TCP 连接将被拒绝, 
+high: 允许所有tcp sockets用于排队缓冲数据报的页面量. (如果超过这个值, TCP 连接将被拒绝,
 这就是为什么不要令其过于保守 (512000 * 300 / 4096) 的原因了.  在这种情况下, 提供的价值很
 大, 它能处理很多连接, 是所预期的 2.5 倍; 或者使现有连接能够传输 2.5 倍的数据.  我的网络
 里为192000 300000 732000)
 
-一般情况下这些值是在系统启动时根据系统内存数量计算得到的. 
+一般情况下这些值是在系统启动时根据系统内存数量计算得到的.
+
+    net.ipv4.tcp_mem = 262144  524288  1048576
+                        1G      2G       4G
 
 ###tcp_app_win
 
@@ -582,7 +598,171 @@ net.core.somaxconn
 * 1.使用echo value方式直接追加到文件里如echo "1" >/proc/sys/net/ipv4/tcp_syn_retries, 但这种方法设备重启后又会恢复为默认值
 * 2.把参数添加到/etc/sysctl.conf中, 然后执行sysctl -p使参数生效, 永久生效
 
+##补充
 
+###interrupt coalescence settings
+
+The interrupt coalescence (IC) feature available for the Intel PRO/1000 XT NIC,
+(as well as many other NIC's) can be set for receive (RxInt) and transmit (TxInt)
+interrupts. These values can be set to delay interrupts in units of 1.024 us. For
+the current latest driver, 5.2.20, the default value is 0 which means the host CPU
+is interrupted for each packet received. Interrupt reduction can improve CPU efficiency
+if properly tuned for specific network traffic. As Ethernet frames arrive, the NIC
+places them in memory but the NIC will wait the RxInt time before generating an interrupt
+to indicate that one or more frames have been received. Thus increasing IC reduces the
+number of context switches made by the kernel to service the interrupts, but adds extra
+latency to frame reception.
+
+When increasing the IC there should be a sufficient numbers of descriptors in the ring-buffers
+associated with the interface to hold the number of packets expected between consecutive interrupts.
+
+As expected when increasing the IC settings the value of the latency increases,
+so that the difference in latency reflects the increased length of time packets
+spend in the NICs memory before being processed by the kernel.
+
+If TxInt is reduced to 0 the throughput is significantly affected for all values of
+RxInt due to increased PCI activity and insufficient power to cope with the context
+switching in the sending PC.
+
+If CPU power is important for your system (for example a shared server machine) than
+it is recommended to use a high interrupt coalescence in order to moderate CPU usage.
+If the machine is going to be dedicated to a single transfer than interrupt coalescence
+should be off.
+
+###NAPI
+
+Since 2.4.20 version of the Linux kernel, the network subsystem has changed
+and is now called NAPI (for New API) [1]. This new API allows to handle
+received packets no more per packet but per device.
+
+Although NAPI is compatible with the old system and so with the old driver,
+you need to use a NAPI-aware driver to enable this improvement in your machine.
+It exists e.g. for Syskonnect Gigabit card [LINK TO BE PROVIDED BY MATHIEU].
+
+The NAPI network subsystem is a lot more efficient than the old system,
+especially in a high performance context. The pros are:
+
+* limitation of interruption rate (you can see it like an adaptative interruption coalescing mechanism) ;
+* not prone to receive livelock [3];
+* better data & instruction locality.
+
+One problem is that there is no parallelism in SMP machine for traffic coming in from a single interface, because a device is always handled by a CPU.
+
+####iftxtqueue length high
+
+There are settings available to regulate the size of the queue between
+the kernel network subsystems and the driver for network interface card.
+Just as with any queue, it is recommended to size it such that losses do
+no occur due to local buffer overflows. Therefore careful tuning is required
+to ensure that the sizes of the queues are optimal for your network connection.
+
+These settings are especially important for TCP as losses on local queues will
+cause TCP to fall into congestion control – which will limit the TCP sending
+rates. Meanwhile, full queues will cause packet losses when transporting udp
+packets.
+
+There are two queues to consider, the txqueuelen; which is related to the transmit
+queue size, and the netdev_backlog; which determines the recv queue size.
+
+To set the length of the transmit queue of the device. It is useful to set this to
+small values for slower devices with a high latency (modem links, ISDN) to prevent
+fast bulk transfers from disturbing interactive traffic like telnet too much.
+
+Users can manually set this queue size using the ifconfig command on the required
+device. Eg.
+
+    /sbin/ifconfig eth2 txqueuelen 2000
+
+The default of 100 is inadequate for long distance, high throughput pipes. For example,
+on a network with a rtt of 120ms and at Gig rates, a txqueuelen of at least 10000 is
+recommended.
+
+###TCP cache parameter (Yee)
+
+Linux 2.4.x tcp has a function to cache tcp network transfer statistics.
+The idea behind this was to improve the performance of tcp on links such
+that it does not have to discover the optimal congestion avoidance settings
+(ssthresh) of every connection. However, in high speed networks, or during
+low network congestion periods, a new tcp connection will use the cached
+values and can perform worse as a result.
+
+In order to rectify this, one can flush all the tcp cache settings using the command:
+
+/sbin/sysctl –w sys.net.ipv4.route.flush=1
+
+Note that this flushes all routes, and is only temporary – ie, one must
+run this command every time the cache is to be emptied.
+
+###SACKs and Nagle
+
+SACKs (Selective Acknowledgments) are an optimisation to TCP which in normal
+scenarios improves considerably performance. In Gigabit networks with no traffic
+competition these have the opposite effect. To improve performance they should be
+turned off by:
+
+/sbin/sysctl -w net.ipv4.tcp_sack=0
+
+Nagle algorithm should however be turned on. This is the default value. You can check
+if your program has Nagle switched off of it sets the TCP_NODELAY socket option. If
+this is the case comment this.
+
+###Using large block sizes
+
+Using large data block sizes improves performance. Applications use frequently 8Kb blocks.
+A value of 64Kb is a better choice.
+
+###Parallel streams
+
+If possible, the application can always use several TCP streams to transfer the data.
+These should involve to create and open more than one socket and parallelise the data
+transfer among these sockets. iperf can also be configured to achieve this with the -P option:
+
+###New TCP stack
+
+Current TCP has been shown not to scale to high bandwidth delay product networks. Several
+proposals already emerged to overcome this limitation. The main ones are High Speed TCP [5],
+Scalable TCP [6] and FAST [7]. Installing the appropriate stacks in your Linux kernel can,
+therefore, improve considerably your performance. Implementations of HS-TCP and Scalable TCP
+can be found at the DataTAG site (http://www.datatag.org)
+
+
+###Harware
+The first thing to make sure for a good data transfer is appropriate hardware. Here are some
+guidelines for hardware configurations for 1 and 10 Gbits/s.
+
+1. 1 Gbit/s network cards
+
+PCI 64-66MHz bus recommended (4Gbit/s theoretical bus limit)
+
+Pay attention to the shared buses on the motherboard (for ex. the SuperMicro motherboard
+for Intel Xeon Processors splits the PCI bus in 3 segments: PCI slots 1-3, PCI slot 4 and
+the on-board SCSI controller if one exists and PCI slots 5-6.
+
+2. Intel 10Gbit/s network cards.
+
+a)PCI-X 133 MHz bus recommended (8.5 Gbit/s theoretical limit)
+b)Processor (and motherboard) with 533 MHz front-side bus
+c)PCI slot configured as bus master (improved stability)
+d)The Intel 10 Gbit/s card should be alone on its bus segment for optimal performance.
+e)The PCI burst size should be increased to 512K
+f)The card driver should be configured with the following parameters:
+    i. Interrupt coalescence
+    ii. Jumbo frames
+    iii. Gigabit Ethernet flow control (it should be active also on the connecting switch)
+    iv. Increased network card packet buffers (default 1024, maximum 4096)
+    v. RX and TX checksum offload enabled 
+
+Jumbo frames should be used if possible
+
+Increase Routers queue sizes. In Cisco equipment for example, the maximum, 4096, should me used.
+
+Gigabit Ethernet Flow Control should be ON
+
+Avoid Fragmentation.
+
+Watch out for IPv6 MTU advertisements. Some routers have IPv6 router advertisement on by default.
+This usually advertises a small value (typically 1500). End systems should turn off listening to
+these advertisements. This is easily configured in the /proc file system
 
 ##例子
 
@@ -646,7 +826,218 @@ net.core.somaxconn
     net.ipv4.tcp_max_syn_backlog 1024
     listen系统调用的backlog参数  8192
 
+
+##附录
+
+##硬件调优
+
+###NUMA
+
+** NUMA locality**
+
+    cat /sys/class/net/$DEV/device/numa_node for PCIe device locality
+    -1 means no locality, depends on hardware platform
+
+###丢包统计
+
+    ethtool --statistics NETNAME(eth0)
+
+    xsos --net has a handy grep for common driver discards
+
+    Packet loss after the OS hands to the NIC
+    ethtool -S ethX and xsos --net again
+
+    Packet loss before the OS hands to the NIC
+    tc -s qdisc to view qdisc dropped
+
+原因
+
+    Poor Interrupt Handling
+    Ring Buffer Overflows(Transmit ring buffer in hardware too small)
+    Lack of Offloading
+    Kernel not picking traffic fast enough
+    Ethernet Flow Control (aka Pause Frames)
+
+    Insufficient length of queue
+    If you must drop, you can decide what to drop
+
+###网卡中断
+
+/proc/interrupts
+
+###中断平衡
+
+* irqbalance 1.0.8 or later
+* 手动平衡中断 /proc/irq/$IRQ/smp_affinity
+
+RSS: Receive Side Scaling (hardware-controlled balancing)
+RPS: Receive Packet Steering (software-controlled balancing)
+RFS: Receive Flow Scaling (application-aware software balancing)
+XPS: Transmit Packet Steering (software selection of transmit queue)
+
+###中断队列
+
+建议: 每个 NUMA 节点对应一个网卡, 每个网卡的多个队列分别对应同一 NUMA 节点的不同的 CPU
+
+一个网卡的多个队列分配到多个 NUMA 节点的不同 CPU 是不建议的
+
+一个网卡的一个队列绑定到一个 CPU. 一个网卡的多个队列绑定到一个 CPU 是不建议的.
+
+ethtool --set-channels $DEV [channel type] N
+
+ethtool --coalesce $DEV rx-usecs N rx-frames N
+
+ip addr show eth0
+ip link set $DEV txqueuelen N (default 500 to 1000)
+
+
+中断和延迟是一个负相关的.
+
+Amount of packets to buffer before sending to the NIC
+Can be enlarged a little for bulk transfer
+can also be reduced for super-low latency, less than 10ms
+Virtual devices (bond, VLAN, tun) don't have a queue, you can add one
+
+Queuing Disciplines allows prioritization and bandwidth restriction
+http://lartc.org/howto/lartc.qdisc.html
+
+###Ring Buffer
+
+ethtool --show-ring eth0
+ethtool --set-ring $DEV rx N tx N
+
+设置尽量大, 但不要超过 4096
+
+###Offload
+
+ethtool --show-features eth0
+ethtool --offload $DEV $FEATURE on
+
+对应转发类的应用(路由器, 交换机), recv offload 是不建议的(如 LRO).
+
+###Kernel 取包速度
+
+cat /proc/net/softnet_stat
+
+0004b220 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000
+00006085 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000
+0000620d 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000
+000058fa 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000
+
+第一列: 总共接受的包
+第二列: backlog overruns
+第三列: SoftIRQ ended with traffic left in the NIC
+
+net.core.netdev_budget = 300 kernel tunable can be slightly increased
+
+Probably dont set budget into the thousands, SoftIRQ can hog the CPU
+
+###协议层
+
+netstat -s
+
+* collapsed - under socket buffer memory pressure, but no loss yet
+* pruned - incoming data was lost due to lack of socket buffer memory
+* Many of these stats are symptoms of packet loss, not causes: retransmit, slow start, congestion, SACK
+
+###Socket Buffer
+
+/etc/sysctl.conf
+
+net.ipv4.tcp_rmem = 4096 262144 16777216
+net.ipv4.tcp_wmem = 4096 262144 16777216
+
+net.core.rmem_max = 16777216
+net.core.wmem_max = 16777216
+net.core.rmem_default = 262144
+net.core.wmem_default = 262144
+
+通过 sysdig, strace 跟踪配置
+
+注:
+1. 如果应用程序设置了, 则自动 tunning 被关闭
+2. 每个参数的值都应用于每个 socket, 值越大, 消耗的内存越大
+
+###Tcp Timestamps
+
+Precise calculation of when traffic was transmitted and received
+
+    Allows for better auto-tuning of buffers and accurate TCP Windowing
+
+
+Provides Protection Against Wrapped Sequence Numbers (PAWS)
+
+    Sequence Numbers are 32-bit, and wrap in 1.8s at 10Gbps
+    A TCP stream can hang on wrap!
+
+Definitely on: net.ipv4.tcp_timestamps = 1
+
+not compatible with NAT, as multiple hosts have different uptimes
+
+###SACK
+
+SACK 增加的系统负载, 但因系统而异, 自己测试
+
+net.ipv4.tcp_sack = 1
+
+###Tcp Backlog
+
+net.core.somaxconn = N
+
+    Not accepting new connections fast enough
+    Also just too many valid incoming connections
+    netstat -s for LISTEN backlog
+    syslog for SYN cookies
+
+###没有很好接受数据
+
+netstat -s for collapsed, pruned
+
+ss for sockets with data in Recv-Q for a long time
+
+###NUMA 亲合性
+
+借助 numactl mumad 工具
+
+尽量将应用程序与网卡中断在同一NUMA 节点
+尽量将应用程序与网卡中断在同一 CPU
+
+###Ethernet Flow Control
+
+Lets the NIC tell the switch to buffer traffic
+
+Lets the switch tell the NIC to buffer traffic
+
+Pause Frames are generated when a watermark in the ring buffer is hit
+A bit of a tradeoff, as it's per-port not per-queue, so one full recv
+queue generates a pause frame which stops all traffic
+
+Try with this on first, test with it off
+
+ethtool --pause $DEV autoneg on rx on tx on
+
+###queueing discipline
+
+The order and amount of packets able to be submitted for transmit is controlled by the interface's queueing discipline
+
+###SoftIRQ
+
+SoftIRQ uses device-specific code to send queued traffic to the hardware Ring Buffer
+
+256 KiB x 100,000 sockets = 24 GiB
+
+SO_REUSEPORT in kernel v3.9 or later can provide in-kernel listen balancing to multiple tasks: https://lwn.net/Articles/542629/
+
+Multiple multicast tasks reading the same socket leads to packet duplication, probably won't scale past four tasks
+
+If possible, design so there is one RX handler, use IPC to distribute data
+
 ##参考
 
 Documentation/networking/ip-sysctl.txt
 http://sandilands.info/sgordon/impact-of-bandwidth-delay-product-on-tcp-throughput
+http://jbainbri.github.io/lca2016.html
+https://www.kernel.org/doc/Documentation/networking/scaling.txt
+https://www.kernel.org/doc/Documentation/networking/ip-sysctl.txt
+http://lartc.org/howto/lartc.qdisc.html
+http://www.kegel.com/c10k.html
