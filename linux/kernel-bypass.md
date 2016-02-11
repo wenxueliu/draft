@@ -206,6 +206,18 @@ I do hope an open source kernel bypass API will emerge soon, one that doesn't re
 [10]: https://patchwork.ozlabs.org/patch/470164/
 
 
+##其他 bypass 技术
+
+* iovisor
+* PFQ : https://github.com/pfq/PFQ
+* suricata-ids: http://suricata-ids.org/
+
+
+##参考
+
+
+
+
 ##附录
 
 ###drop packets earlier by using tc
