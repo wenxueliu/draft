@@ -453,3 +453,13 @@ http://coolshell.cn/articles/7490.html
 [1]: (http://coolshell.cn/articles/6470.html)
 [2]: (http://coolshell.cn/articles/6470.html)
 [3]: (http://www.ibm.com/developerworks/cn/linux/l-numa/index.html)
+
+
+架构思路
+
+###异步换同步
+###集中变分布
+###架构层次化
+###功能分解化
+###服务中心化
+###结点监控化
