@@ -32,3 +32,22 @@ Save命令用于持久化镜像（不是容器）。所以，我们就需要通�
 
 	    sudo docker images --tree
 
+
+基础镜像
+选择（busybox > debian > Ubuntu > centos）
+中文的支持
+镜像
+不要在基础镜像中继续升级
+想办法使得镜像尽可能的小
+构建命令组合使用减少镜像的层数
+尽量不要在容器中开启SSH
+应用拆分
+职责单一原则
+尽量在高版本的内核中使用docker
+
+
+###正确的 Dockerfile 只有三行
+
+* FROM base20151030:jre8.20u
+* ADD app.jar /app
+* CMD [ “java” , “-jar”, “app.jar” ]
