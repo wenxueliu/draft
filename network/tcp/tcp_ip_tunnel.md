@@ -410,6 +410,17 @@ Linux 根据参数 net.ipv4.tcp_adv_win_scale 计算额外开销的大小:
 
 SO_RCVBUF 是具体连接的值, 受限于 net.core.rmem_max, 最小为 256.
 
+注:
+
+recvBuf 不仅包括 payload, 还包括一些元数据(多达 240 byte), recvBuf 过大, 合并 tcp 包到
+一个大的 skb_buff, 合并需要时间, 尤其是在高负载下, 因此显著增加延迟
+
+
+
+net.ipv4.tcp_rmem = 4096 5242880 33554432
+
+net.ipv4.tcp_rmem = 4096 1048576 2097152
+
 
 ###tcp_mem: min default max
 
@@ -591,6 +602,8 @@ net.core.somaxconn
 * 建议值 873200
 
 最大的TCP数据发送缓冲
+
+###tcp_collapse
 
 
 两种修改内核参数方法
@@ -1041,3 +1054,4 @@ https://www.kernel.org/doc/Documentation/networking/scaling.txt
 https://www.kernel.org/doc/Documentation/networking/ip-sysctl.txt
 http://lartc.org/howto/lartc.qdisc.html
 http://www.kegel.com/c10k.html
+http://bagder.github.io/I-D/httpbis-tcp/
