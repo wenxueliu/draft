@@ -38,6 +38,10 @@ Step4: send()调用返回，结果导致了第四次的上下文切换。DMA 引
 
 我们可以很清楚的看到，数据在磁盘、中间内核缓冲区和用户缓冲区中被拷贝了多次，并且经过了多次上下文切换。显然，这样的数据传输效率是很低下的。
 
+Use of the intermediate kernel buffer (rather than a direct transfer of the data into the user buffer) might seem inefficient. But intermediate kernel buffers were introduced into the process to improve performance. Using the intermediate buffer on the read side allows the kernel buffer to act as a "readahead cache" when the application hasn't asked for as much data as the kernel buffer holds. This significantly improves performance when the requested data amount is less than the kernel buffer size. The intermediate buffer on the write side allows the write to complete asynchronously.
+
+Unfortunately, this approach itself can become a performance bottleneck if the size of the data requested is considerably larger than the kernel buffer size. The data gets copied multiple times among the disk, kernel buffer, and user buffer before it is finally delivered to the application.
+
     而零拷贝正是通过消除这些冗余的数据拷贝从而提高了性能，下面我们就循序渐进地看看使用零拷贝传输数据的情况是什么样的：
     
 	    
@@ -93,6 +97,8 @@ Step4: send()调用返回，结果导致了第四次的上下文切换。DMA 引
 	 write(socket, tmp_buf, len);
 	
 首先，应用程序调用了 mmap() 之后，数据会先通过 DMA 拷贝到操作系统内核的缓冲区中去。接着，应用程序跟操作系统共享这个缓冲区，这样，操作系统内核和应用程序存储空间就不需要再进行任何的数据拷贝操作。应用程序调用了 write() 之后，操作系统内核将数据从原来的内核缓冲区中拷贝到与 socket 相关的内核缓冲区中。接下来，数据从内核 socket 缓冲区拷贝到协议引擎中去，这是第三次数据拷贝操作。
+
+此外上下文切换也由四次变为两次
 
 		    xxxxx 应用程序 xxxxx 			用户层
 	                              
@@ -224,7 +230,7 @@ fbufs 在实现上有如下这些特性，如图 9 所示：
 前面提到，这种方法需要修改 API，如果要使用 fbufs 体系结构，应用程序和 Linux 操作系统内核驱动程序都需要使用新的 API，如果应用程序要发送数据，那么它就要从缓冲区池里获取一个 fbuf，将数据填充进去，然后通过文件描述符将数据发送出去。接收到的 fbufs 可以被应用程序保留一段时间，之后，应用程序可以使用它继续发送其他的数据，或者还给缓冲区池。但是，在某些情况下，需要对数据包内的数据进行重新组装，那么通过 fbuf 接收到数据的应用程序就需要将数据拷贝到另外一个缓冲区内。再者，应用程序不能对当前正在被内核处理的数据进行修改，基于这一点，fbufs 体系结构引入了强制锁的概念以保证其实现。对于应用程序来说，如果 fbufs 已经被发送给操作系统内核，那么应用程序就不会再处理这些 fbufs。
 
 http://www.ibm.com/developerworks/cn/linux/l-cn-zerocopy1/
-
+https://www.ibm.com/developerworks/linux/library/j-zerocopy/
 
 一般来说, 认为从网卡到用户空间的系统调用会经历两次或者两次半的copy过程.
 zero copy就是要消除这些copy过程.
@@ -239,3 +245,34 @@ fbufs 存在的一些问题
 
 
 
+###java 中的零拷贝
+
+public void transferTo(long position, long count, WritableByteChannel target);
+
+
+Figure 3 shows the data path when the transferTo() method is used:
+
+![zero-copy1](zero-copy-1.gif)
+
+Figure 4 shows the context switches when the transferTo() method is used:
+
+![zero-copy1](zero-copy-2.gif)
+
+The steps taken when you use transferTo() are:
+
+    The transferTo() method causes the file contents to be copied into a read buffer by the DMA engine. Then the data is copied by the kernel into the kernel buffer associated with the output socket.
+    The third copy happens as the DMA engine passes the data from the kernel socket buffers to the protocol engine.
+
+This is an improvement: we've reduced the number of context switches from four to two and reduced the number of data copies from four to three (only one of which involves the CPU). But this does not yet get us to our goal of zero copy. We can further reduce the data duplication done by the kernel if the underlying network interface card supports gather operations. In Linux kernels 2.4 and later, the socket buffer descriptor was modified to accommodate this requirement. This approach not only reduces multiple context switches but also eliminates the duplicated data copies that require CPU involvement. The user-side usage still remains the same, but the intrinsics have changed: 
+
+    The transferTo() method causes the file contents to be copied into a kernel buffer by the DMA engine.
+    No data is copied into the socket buffer. Instead, only descriptors with information about the location and length of the data are appended to the socket buffer. The DMA engine passes data directly from the kernel buffer to the protocol engine, thus eliminating the remaining final CPU copy.
+
+Figure 5 shows the data copies using transferTo() with the gather operation: 
+
+![zero-copy1](zero-copy-3.gif)
+
+
+##Performance comparison
+
+TODO
