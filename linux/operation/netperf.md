@@ -139,7 +139,7 @@ Netperf缺省情况下进行TCP批量传输, 即-t TCP_STREAM. 测试过程中, 
 
     $ netserver -p 5000
 
-    $netperf -H 10.1.2.11 -l 10 -p 5000
+    $netperf -H 10.1.2.11 -l 10 -p 5000 -D
     MIGRATED TCP STREAM TEST from 0.0.0.0 (0.0.0.0) port 0 AF_INET to 10.1.2.11 ()
     port 0 AF_INET
     Recv   Send    Send
@@ -175,7 +175,7 @@ TCP_STREAM方式下与测试相关的局部参数如下表所示:
 * -S size	设置远端系统的 socket 发送与接收缓冲大小
 * -m size	设置本地系统发送测试分组的大小
 * -M size	设置远端系统接收测试分组的大小
-* -D	对本地与远端系统的 socket 设置 TCP_NODELAY 选项
+* -D	    对本地与远端系统的 socket 设置 TCP_NODELAY 选项
 
 通过修改以上的参数, 并观察结果的变化, 我们可以确定是什么因素影响了连接的吞吐量. 例如, 如果怀疑路由器由于缺乏足够的缓冲区空间,
 使得转发大的分组时存在问题, 就可以增加测试分组(-m)的大小, 以观察吞吐量的变化:
@@ -291,3 +291,66 @@ UDP_RR 方式使用 UDP 分组进行 request/response 的交易过程. 由于没
 除了 netperf 以外, 还有很多其它的网络性能测试工具, 如 dbs, iperf, pathrate, nettest, netlogger, tcptrace, ntop 等. 这些工具有其各
 自的特色和不同的侧重点, 我们可以根据具体的应用环境, 有选择的使用它们, 这样就可以使这些工具发挥出最大的功效. 虽然都是开放源代码的软件,
 但是这些工具的功能与商业的网络测试工具同样强大, 而且也得到了广泛的应用, 熟悉这些工具对我们的实际工作一定会有很大的帮助.
+
+
+##其他
+
+sysctl –e net.ipv4.tcp_autocorking=0
+
+The -m option controls how many bytes are presented to the transport in
+any one send call.
+
+The -M option controls the upper bound on how many bytes are requested
+of the transport in any one receive call.
+
+The -m option will certainly interact with other things to affect the
+size of packets "on the wire" but it is not a "direct" control of TCP
+segment size.
+
+It is only by chance/luck/timing that you can "control" the TCP segment
+size via netperf.  As has been mentioned, there is the -D option to set
+TCP_NODELAY, which will help, but it is still not going to guarantee a
+given segment size when used in conjuction with -m.  The effects of
+packet loss and congestion control can still leave you with at least
+occasional, larger TCP segments.
+
+This is an issue for the packet-per-second testing I used to be able to
+do (years ago, with TCP was simpler :) ).  About the only way to "know"
+the TCP segment size is no larger than N is to have no more than one,
+N-headers size send outstanding at one time on any given TCP connection.
+
+Depending on just how small one wishes the quantity of data in any given
+TCP segment to be, it *might* be possible to use the test-specific -G
+option to cause a setsockopt(TCP_MAXSEG) to be issued.  It will not
+enable one to go larger than the MSS could be for the physical
+network(s) in play but it should allow one to go smaller, though perhaps
+bounded. (Looks like the smallest effective MSS I have been able to
+create is 76 bytes, your mileage may vary).
+
+There are some heuristics - eg ACK policy - which have MSS as part of
+their input, so you might have some behaviour changes in TCP as you play
+with that.
+
+And if you were concerned with "things" in the end-systems rather than
+in the middle, you may have to concern yourself with the settings for
+things like TSO/GSO and GRO/LRO.
+
+In some ways, if you want to have fully-controlled packet sizes, it may
+be easier to use UDP tests.
+
+
+###增加控制发送速率
+
+./configure --enable-intervals
+
+When netperf is configured with --enable-intervals or --enable-spin and
+recompiled then the global -w option will set how often burst of up to
+-b sends will be send.  However, if it takes longer than the interval
+specified by -w to send that burst, behaviour is undefined on many
+platforms the test may end prematurely.
+
+
+##参考
+
+http://www.netperf.org/svn/netperf2/trunk/doc/netperf.html#Top
+http://www.netperf.org/pipermail/netperf-talk/2015-July/001271.html
