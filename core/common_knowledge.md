@@ -75,6 +75,11 @@ Simple math: 1s / 250usec = 4GB/sec maximum
 * 10000转HDD的平均潜伏时间3.00ms
 * 15000转HDD的平均潜伏时间2.00ms
 
+
+JBOD configuration with six 7200rpm SATA RAID-5 array
+linear writes : 600MB/sec
+random writes : 100k/sec
+
 ##数据库
 
 * MySQL性能评测本身需要的环境：cpu、disk、engine、表结构和大小、线程数、各参数设置：
