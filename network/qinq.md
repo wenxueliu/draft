@@ -188,3 +188,7 @@ Bridge GVRP Address（01-80-C2-00-00-0D），对于用户GVRP报文（01-80-C2-0
 * 基于端口（Port-based service interface），在这种模式下用户是根据接入的端口来选择 S-VLAN(Service Instance)的
 * 基于 C-VLAN（C-Tagged service interfaces），在这种模式下是根据用户使用的 C-VID 来先择 S-VLAN(Service
 Instance)，即同当前我们所见的灵活 QinQ 类似。
+
+
+##参考
+http://blog.chinaunix.net/uid-20786208-id-5515010.html
