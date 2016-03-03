@@ -1,8 +1,12 @@
 From the Netty web site:
 
-	"Netty is a NIO client server framework which enables quick and easy development of network applications such as protocol servers and clients. It greatly simplifies and streamlines network programming such as TCP and UDP socket server."
+	"Netty is a NIO client server framework which enables quick and easy development of network applications such as protocol servers and clients.
+    It greatly simplifies and streamlines network programming such as TCP and UDP socket server."
 
-Netty is a Java library and API primarilly aimed at writing highly concurrent networked and networking applications and services. One aspect of Netty you may find different from standard Java APIs is that it is predominantly an asynchronous API. That term implies differnet things to different people and may overlap with the terms non-blocking and event-driven. Regardless, if you have never used an asynchronous API before, it takes a little bit of a mind shift to implement Netty if you are accustomed to writing linear software. Here's how I would boil it down.
+Netty is a Java library and API primarilly aimed at writing highly concurrent networked and networking applications and services. One aspect of Netty
+you may find different from standard Java APIs is that it is predominantly an asynchronous API. That term implies differnet things to different people
+and may overlap with the terms non-blocking and event-driven. Regardless, if you have never used an asynchronous API before, it takes a little bit of
+a mind shift to implement Netty if you are accustomed to writing linear software. Here's how I would boil it down.
 
 You build a Netty stack and start it. Issuing requests is easy and much the same as it is in any Java API. The mind shift comes in processing responses because there are none. Almost every single method invocation of substance is asynchronous, which means that there is no return value and invocation is usually instantaneous. The results (if there are any) will be delivered back in another thread. This is the fundamental difference between a standard API and an asynchronous one. Consider a client API that supplies a method to acquire the number of widgets from the server.
 
