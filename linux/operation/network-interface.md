@@ -231,6 +231,12 @@ vim /etc/sysconfig/network-scripts/ifcfg-eth0
     ifup eth0
     service network restart
 
+##修改网卡名称
+
+1. 修改 /etc/udev/rules.d/70-persistent-net.rules
+2. CentOS 修改 /etc/sysconfig/network-script/ifcfg-ethx 对应网卡名和文件中的 DEVICE. Debian 忽略此步骤
+3. 重启
+
 ###参考
 [1](debian参考手册)
 [2](http://unix.stackexchange.com/questions/50602/cant-ifdown-eth0-main-interface)
