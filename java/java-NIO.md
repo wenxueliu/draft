@@ -140,6 +140,12 @@ Filter pattern to give a user full control over how an event is handled and how 
 For each new channel, a new pipeline must be created and attached to the channel. Once attached, the coupling between the channel and the pipeline
 is permanent; the channel cannot attach another pipeline to it nor detach the current pipeline from it.
 
+1. 创建, 增加, 删除,替换 ChannelHandler
+2. 加入 Channel, 获取所属 Channel
+3. 加入 ChannelSink, 获取所属 ChannelSink
+4. 加入 ChannelHandlerContext, 获取所属 ChannelHandlerContext
+5. 发送 ChannelEvent 给 UpstreamHandler, 或 DownstreamHandler
+
                                            I/O Request
                                          via Channel or
                                      ChannelHandlerContext
@@ -284,6 +290,9 @@ dynamically, or store the information (attachment) which is specific to the hand
 **Because the handler instance has a state variable which is dedicated to one connection, you have to create a new handler instance for each
 new channel to avoid a race condition where a unauthenticated client can get the confidential information**
 
+1. 与 ChannelPipeline 的交互通过 ChannelHandlerContext 来实现
+2. 发送 ChannelEvent 给下一个 ChannelHandler(UpstreamHandler 或 DownstreamHandler)
+3. 在 ChannelHandler 加入之前或之后做预处理或善后工作
 
 子接口
 
@@ -329,6 +338,45 @@ ChannelEvent upstream or downstream, modify the ChannelPipeline it belongs to dy
 Please note that a ChannelHandler instance can be added to more than one ChannelPipeline. It means a single
 ChannelHandler instance can have more than one ChannelHandlerContext and therefore the single instance can
 be invoked with different ChannelHandlerContexts if it is added to one or more ChannelPipelines more than once.
+
+1. 获取所属 channel, channelhandler, channelpipeline
+2. 发送 downstream, upstream 事件
+3. 存储状态信息
+
+
+####ChannelFuture
+
+The result of an asynchronous Channel I/O operation.
+
+All I/O operations in Netty are asynchronous. It means any I/O calls will return immediately with no guarantee
+that the requested I/O operation has been completed at the end of the call. Instead, you will be returned with
+a ChannelFuture instance which gives you the information about the result or status of the I/O operation.
+
+A ChannelFuture is either uncompleted or completed. When an I/O operation begins, a new future object is created.
+The new future is uncompleted initially - it is neither succeeded, failed, nor cancelled because the I/O operation
+is not finished yet. If the I/O operation is finished either successfully, with failure, or by cancellation, the
+future is marked as completed with more specific information, such as the cause of the failure. Please note that
+even failure and cancellation belong to the completed state.
+
+                                         +---------------------------+
+                                         | Completed successfully    |
+                                         +---------------------------+
+                                    +---->      isDone() = true      |
+    +--------------------------+    |    |   isSuccess() = true      |
+    |        Uncompleted       |    |    +===========================+
+    +--------------------------+    |    | Completed with failure    |
+    |      isDone() = false    |    |    +---------------------------+
+    |   isSuccess() = false    |----+---->   isDone() = true         |
+    | isCancelled() = false    |    |    | getCause() = non-null     |
+    |    getCause() = null     |    |    +===========================+
+    +--------------------------+    |    | Completed by cancellation |
+                                    |    +---------------------------+
+                                    +---->      isDone() = true      |
+                                         | isCancelled() = true      |
+                                         +---------------------------+
+
+
+
 
 * TCP NIO Channels: NioClientSocketChannelFactory and NioServerSocketChannelFactory
 * UDP NIO Channels: NioDatagramChannelFactory
