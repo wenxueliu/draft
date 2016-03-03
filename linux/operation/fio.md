@@ -3,13 +3,13 @@ fio是一个非常灵活的 IO 测试工具, 他可以通过多线程或进程�
 随着块设备的发展, 特别是 SSD 盘的出现, 设备的并行度越来越高. 要想利用好这些设备, 有个诀窍就是提高设备的 iodepth,
 一次喂给设备更多的 IO 请求, 让电梯算法和设备有机会来安排合并以及内部并行处理, 提高总体效率.
 
-应用程序使用IO通常有二种方式: 
+应用程序使用IO通常有二种方式:
 
 ##准备知识
 
 ###硬盘性能指标
 
-顺序读写 （吞吐量，常用单位为MB/s）：文件在硬盘上存储位置是连续的。
+顺序读写（吞吐量，常用单位为MB/s）：文件在硬盘上存储位置是连续的。
 
 适用场景：大文件拷贝（比如视频音乐）。速度即使很高，对数据库性能也没有参考价值。
 
@@ -32,15 +32,18 @@ fio是一个非常灵活的 IO 测试工具, 他可以通过多线程或进程�
 
 服务时间 = 寻道时间 + 旋转时间 + 传输时间
 
-对于10000转速的SATA硬盘来说，一般寻道时间是7 ms，旋转时间是3 ms, 64KB的传输时间是 0.8 ms， 则SATA硬盘每秒可以进行随机IO操作是 1000/(7 + 3 + 0.8) = 93，所以我们估算SATA硬盘64KB随机写的IOPS是93。一般的硬盘厂商都会标明顺序读写的MBPS。
+对于 10000 转速的 SATA 硬盘来说，一般寻道时间是7 ms，旋转时间是3 ms, 64KB 的传输时间是 0.8 ms，
+则 SATA 硬盘每秒可以进行随机 IO 操作是 1000/(7 + 3 + 0.8) = 93，所以我们估算SATA硬盘64KB随机写的
+IOPS 是 93。一般的硬盘厂商都会标明顺序读写的 MBPS。
 
-我们在列出IOPS时，需要说明IO大小，寻址空间，读写模式，顺序/随机，队列深度。我们一般常用的IO大小是4KB，这是因为文件系统常用的块大小是4KB。
+我们在列出 IOPS 时，需要说明 IO 大小，寻址空间，读写模式，顺序/随机，队列深度。
+我们一般常用的 IO 大小是 4KB，这是因为文件系统常用的块大小是 4KB。
 
 
 ###同步 IO 和异步 IO
 
-同步的IO一次只能发出一个IO请求, 等待内核完成才返回, 这样对于单个线程 iodepth 总是小于 1, 但是可以通过多个线程并发执行来解决,
-通常我们会用 16-32 个线程同时工作把 iodepth 塞满.
+同步的 IO 一次只能发出一个 IO 请求, 等待内核完成才返回, 这样对于单个线程 iodepth 总是小于 1, 但是
+可以通过多个线程并发执行来解决, 通常我们会用 16-32 个线程同时工作把 iodepth 塞满.
 
 异步的话就是用类似 libaio 这样的 linux native aio 一次提交一批, 然后等待一批的完成, 减少交互的次数, 会更有效率.
 
@@ -71,19 +74,19 @@ IO 队列深度通常对不同的设备很敏感, 那么如何用 fio 来探测�
     If true, use non-buffered I/O (usually O_DIRECT). Default: false.
 
     fsync=int
-    How many I/Os to perform before issuing an fsync(2) of dirty data. If 0, don’t sync. Default: 0. 
+    How many I/Os to perform before issuing an fsync(2) of dirty data. If 0, don’t sync. Default: 0.
 
 这几个参数在 libaio 的引擎下的作用, 会用 iodepth 值来调用 io_setup 准备一个可以一次提交 iodepth 个 IO 的上下文,
 同时申请一个 IO 请求队列用于保持 IO.  在压测进行的时候, 系统会生成特定的 IO 请求, 往 IO 请求队列里面扔, 当队列
 里面的 IO 数量达到 iodepth\_batch 值的时候, 就调用 io\_submit 批次提交请求, 然后开始调用 io_getevents 开始收割已
 经完成的 IO.  每次收割多少呢? 由于收割的时候, 超时时间设置为 0, 所以有多少已完成就算多少, 最多可以收割
-iodepth_batch_complete 值个. 随着收割, IO 队列里面的IO数就少了, 那么需要补充新的 IO.  什么时候补充呢? 当 IO 数目
+iodepth_batch_complete 值个. 随着收割, IO 队列里面的 IO 数就少了, 那么需要补充新的 IO.  什么时候补充呢? 当 IO 数目
 降到 iodepth\_low 值的时候, 就重新填充, 保证 OS 可以看到至少 iodepth_low 数目的 IO 在电梯口排队着.
 
 
 由上分析，为了测出磁盘的性能, 就要加大硬盘队列深度, 让硬盘不断工作，减少硬盘的空闲时间即
 
-    加大队列深度 -> 提高利用率 -> 获得IOPS和MBPS峰值 -> 注意响应时间在可接受的范围内
+    加大队列深度 -> 提高利用率 -> 获得 IOPS 和 MBPS 峰值 -> 注意响应时间在可接受的范围内
 
 增加队列深度的办法有很多
 
@@ -140,7 +143,9 @@ fio -filename=/dev/sda -direct=1 -iodepth 1 -thread -rw=randwrite -ioengine=psyn
 fio -filename=/dev/sda -direct=1 -iodepth 1 -thread -rw=randrw -rwmixread=70 -ioengine=psync -bs=16k -size=200G -numjobs=30 -runtime=100 -group_reporting -name=mytest -ioscheduler=noop
 
 //根据配置文件
+
 fio fio.conf
+
 #复制下面的配置内容，将directory=/path/to/test修改为你测试硬盘挂载目录的地址，并另存为fio.conf
 
 ```
@@ -154,6 +159,14 @@ fio fio.conf
 	ramp_time=6
 	size=1g
 	directory=/path/to/test
+    #bsrange=512-2048
+    #userspace_reap
+    #rwmixwrite=20
+    #time_based
+    #iodepth_batch=8
+    #iodepth_low=8
+    #iodepth_batch_complete=8
+    #exitall
 
 	[read4k-rand]
 	stonewall
@@ -188,9 +201,39 @@ fio fio.conf
 	iodepth=4
 ```
 
-NOTE:
+常用参数说明
 
-	
+* bsrange=512-2048          //数据块的大小范围, 从512bytes到2048 bytes
+* ioengine=libaio           //指定io引擎
+* userspace_reap            //配合libaio, 提高异步io的收割速度
+* rw=randrw                 //混合随机对写io, 默认读写比例5:5
+* rwmixwrite=20             //在混合读写的模式下, 写占20%
+* time_based                //在runtime压力测试周期内, 如果规定数据量测试完, 要重复测试
+* runtime=180               //在180秒, 压力测试将终止
+* direct=1                  //设置非缓冲io
+* group_reporting           //如果设置了多任务参数numjobs, 用每组报告代替每job报告
+* randrepeat=0              //设置产生的随机数是不可重复的
+* norandommap
+* ramp_time=6
+* iodepth=16
+* iodepth_batch=8
+* iodepth_low=8
+* iodepth_batch_complete=8
+* exitall                           //一个job完成, 就停止所有的
+* filename=/dev/mapper/cachedev     //压力测试的文件名
+* numjobs=1                         //job的默认数量, 也就是并发数, 默认是1
+* size=200G                         //这job总共的io大小
+* refill_buffers                    //每次提交后都重复填充io buffer
+* overwrite=1                       //设置文件可覆盖
+* sync=1                            //设置异步io
+* fsync=1                           //一个io就同步数据
+* invalidate=1                      //开始io之前就失效buffer-cache
+* directory=/your_dir               // fielname参数值的前缀
+* thinktime=600                     //在发布io前等待600秒
+* thinktime_spin=200                //消费cpu的时间, thinktime的剩余时间sleep
+* thinktime_blocks=2                //在thinktime之前发布的block数量
+* bssplit=4k/30:8k/40:16k/30        //随机读4k文件占30%、8k占40%、16k占30%
+* rwmixread=70                      //读占70%
 
 
 ##测试准备
@@ -202,9 +245,9 @@ fio任务配置里面有几个点需要非常注意：
 
 1. libaio工作的时候需要文件direct方式打开。
 2. 块大小必须是扇区(512字节)的倍数。
-3. userspace_reap提高异步IO收割的速度。
-4. ramp_time的作用是减少日志对高速IO的影响。
-5. 只要开了direct,fsync就不会发生。
+3. userspace_reap 提高异步 IO 收割的速度。
+4. ramp_time 的作用是减少日志对高速 IO 的影响。
+5. 只要开了 direct,fsync 就不会发生。
 6. 测试过程用 iostat -dx 1　关注磁盘利用率 %util
 7. 当遇到问题不要忘了加参数 --debug=io
 
@@ -214,76 +257,10 @@ fio任务配置里面有几个点需要非常注意：
 队列深度(iodepth) 影响
 寻址空间(size) 的影响
 
-
-
 ##参考
 
 http://blog.yufeng.info/archives/2104
 http://wsgzao.github.io/post/fio/
-
-
-
- 
-
-
-fio可以通过配置文件来配置压力测试的方式, 可以用选项 --debug=io来检测fio是否工作
-
-[root@vmforDB05 tmp]# cat fio_test
-[global] 
-bsrange=512-2048 
-ioengine=libaio 
-userspace_reap 
-rw=randrw 
-rwmixwrite=20 
-time_based 
-runtime=180 
-direct=1 
-group_reporting 
-randrepeat=0 
-norandommap 
-ramp_time=6 
-iodepth=16 
-iodepth_batch=8 
-iodepth_low=8 
-iodepth_batch_complete=8 
-exitall 
-[test] 
-filename=/dev/mapper/cachedev 
-numjobs=1
-
-常用参数说明
-bsrange=512-2048  //数据块的大小范围, 从512bytes到2048 bytes
-ioengine=libaio        //指定io引擎
-userspace_reap      //配合libaio, 提高异步io的收割速度
-rw=randrw                //混合随机对写io, 默认读写比例5:5
-rwmixwrite=20         //在混合读写的模式下, 写占20%
-time_based             //在runtime压力测试周期内, 如果规定数据量测试完, 要重复测试 
-runtime=180            //在180秒, 压力测试将终止
-direct=1                    //设置非缓冲io
-group_reporting      //如果设置了多任务参数numjobs, 用每组报告代替每job报告
-randrepeat=0         //设置产生的随机数是不可重复的
-norandommap 
-ramp_time=6 
-iodepth=16 
-iodepth_batch=8 
-iodepth_low=8 
-iodepth_batch_complete=8 
-exitall                                                     //一个job完成, 就停止所有的
-filename=/dev/mapper/cachedev    //压力测试的文件名
-numjobs=1                                         //job的默认数量, 也就是并发数, 默认是1
-size=200G                                          //这job总共的io大小
-refill_buffers                                      //每次提交后都重复填充io buffer
-overwrite=1                                       //设置文件可覆盖
-sync=1                                              //设置异步io
-fsync=1                                             //一个io就同步数据
-invalidate=1                                   //开始io之前就失效buffer-cache
-directory=/your_dir                        // fielname参数值的前缀
-thinktime=600                              //在发布io前等待600秒
-thinktime_spin=200    //消费cpu的时间, thinktime的剩余时间sleep
-thinktime_blocks=2    //在thinktime之前发布的block数量
-
-bssplit=4k/30:8k/40:16k/30            //随机读4k文件占30%、8k占40%、16k占30%
-rwmixread=70                                                         //读占70% 
 
 
 ##附录
@@ -293,20 +270,20 @@ rwmixread=70                                                         //读占70%
 
 ####吞吐量
 
-吞吐量主要取决于阵列的构架, 光纤通道的大小(现在阵列一般都是光纤阵列, 至于 SCSI 这样的 SSA 阵列, 我们不讨论)以及硬盘的个数. 
-阵列的构架与每个阵列不同而不同, 他们也都存在内部带宽(类似于pc的系统总线), 不过一般情况下, 内部带宽都设计的很充足, 不是瓶颈的所在. 
+吞吐量主要取决于阵列的构架, 光纤通道的大小(现在阵列一般都是光纤阵列, 至于 SCSI 这样的 SSA 阵列, 我们不讨论)以及硬盘的个数.
+阵列的构架与每个阵列不同而不同, 他们也都存在内部带宽(类似于pc的系统总线), 不过一般情况下, 内部带宽都设计的很充足, 不是瓶颈的所在.
 
 光纤通道的影响还是比较大的, 如数据仓库环境中, 对数据的流量要求很大, 而一块 2Gb 的光纤卡, 所能支撑的最大流量应当是
-2Gb/8(小B) = 250MB/s(大B) 的实际流量, 当 4 块光纤卡才能达到1GB/s的实际流量, 所以数据仓库环境可以考虑换4Gb的光纤卡. 
+2Gb/8(小B) = 250MB/s(大B) 的实际流量, 当 4 块光纤卡才能达到1GB/s的实际流量, 所以数据仓库环境可以考虑换4Gb的光纤卡.
 
 
-最后说一下硬盘的限制, 这里是最重要的, 当前面的瓶颈不再存在的时候, 就要看硬盘的个数了, 我下面列一下不同的硬盘所能支撑的流量大小: 
+最后说一下硬盘的限制, 这里是最重要的, 当前面的瓶颈不再存在的时候, 就要看硬盘的个数了, 我下面列一下不同的硬盘所能支撑的流量大小:
 
 	　　10 K rpm    15 K rpm     ATA
 	　　10MB/s       13MB/s      8MB/s
 
-那么, 假定一个阵列有 120 块 15K rpm 的光纤硬盘, 那么硬盘上最大的可以支撑的流量为 120*13=1560MB/s, 如果是2Gb的光纤卡, 可能需要
-6 块才能够, 而 4Gb 的光纤卡, 3-4块就够了. 
+那么, 假定一个阵列有 120 块 15K rpm 的光纤硬盘, 那么硬盘上最大的可以支撑的流量为 120*13=1560MB/s, 如果是 2Gb 的光纤卡, 可能需要
+6 块才能够, 而 4Gb 的光纤卡, 3-4 块就够了.
 
 ####IOPS
 
