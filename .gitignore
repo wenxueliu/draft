@@ -1,3 +1,5 @@
 *~
 network/_book
 **/.*
+_book/
+SUMMARY.md
