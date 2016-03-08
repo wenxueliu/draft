@@ -36,6 +36,17 @@ Simple math: 1s / 250usec = 4GB/sec maximum
 * Main memory reference         100 ns
 * Compress 1K bytes with Zippy  10,000 ns
 
+* L1 cache sequential access        4 cycle
+* L1 cache in Page Random access    4 cycle
+* L1 cache in Full Random access    4 cycle
+* L2 cache sequential access        11 cycle
+* L2 cache in Page Random access    11 cycle
+* L2 cache in Full Random access    11 cycle
+* L3 cache sequential access        14 cycle
+* L3 cache in Page Random access    18 cycle
+* L2 cache in Full Random access    38 cycle
+* Main Memory                       167 cycle
+
 ###network
 
 * Send 2K bytes over 1 Gbps network     20,000 ns
