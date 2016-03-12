@@ -4,12 +4,33 @@
 
 从速度和反应时间角度来讲，非延迟加载（又称饿汉式）好；从资源利用效率上说，延迟加载（又称懒汉式）好。
 
+##饿汉式
+
+```
+    public class Singleton {
+        private static Singleton instance = new Singleton();
+
+        private Singleton(){}
+
+        public static Singleton getInstance(){
+            return instance;
+        }
+    }
+```
+
+* 多线程安全
+* 加载类时就初始化完成,无法延时加载
+
+
 ##懒汉式，线程不安全(同步延迟加载)
 
 ```java
     public class Singleton {
+
     	private static Singleton instance;
+
     	private Singleton (){}
+
     	public static Singleton getInstance() {
     		if (instance == null) {
     		    instance = new Singleton();
@@ -27,9 +48,13 @@
 为了解决上面的问题，最简单的方法是将整个 getInstance() 方法设为同步（synchronized）。
 
 ```java
+
     public class Singleton {
+
     	private static Singleton instance;
+
     	private Singleton (){}
+
     	public static synchronized Singleton getInstance() {
     		if (instance == null) {
     		    instance = new Singleton();
@@ -37,10 +62,11 @@
     		return instance;
     	}
     }
+
 ```
 
 虽然做到了线程安全，并且解决了多实例的问题，但是它并不高效。假设有多个同时调用 getInstance()
-,在任何时候只能有一个线程调用 getInstance() 方法,除了创建实例的线程,其他线程等待只是判断 
+,在任何时候只能有一个线程调用 getInstance() 方法,除了创建实例的线程,其他线程等待只是判断
 instance != null 后直接返回, 如果在 synchronized 外加 if(instance == null), 那么,
 如果实例已经创建,后续现场可以并发判断 if(instance == null), 这就是双重检验锁。
 
@@ -51,16 +77,24 @@ instance != null 后直接返回, 如果在 synchronized 外加 if(instance == n
 步块内还要再检验一次？因为可能会有多个线程一起进入同步块外的 if，如果在同步块内不进行二次检验的话
 就会生成多个实例了。
 
+
 ```
-    public static Singleton getSingleton() {
-    	if (instance == null) {               
-    		synchronized (Singleton.class) {         //1
-    			if (instance == null) {           //2
-    				instance = new Singleton();//3
-    			}
-    		}
-    	}
-    	return instance ;
+    public class Singleton {
+
+        private static Singleton instance ;
+
+        private Singleton(){}
+
+        public static Singleton getSingleton() {
+        	if (instance == null) {
+        		synchronized (Singleton.class) {            //1
+        			if (instance == null) {                 //2
+        				instance = new Singleton();         //3
+        			}
+        		}
+        	}
+        	return instance ;
+        }
     }
 ```
 
@@ -80,8 +114,8 @@ instance != null 后直接返回, 如果在 synchronized 外加 if(instance == n
 如果你还是有疑问,那么, 假设代码执行以下事件序列：
 
 * 线程 1 进入 getInstance() 方法。
-* 由于 instance 为 null，线程 1 在 //1 处进入 synchronized 块。 
-* 线程 1 前进到 //3 处，但在构造函数执行之前，使实例成为非 null。 
+* 由于 instance 为 null，线程 1 在 //1 处进入 synchronized 块。
+* 线程 1 前进到 //3 处，但在构造函数执行之前，使实例成为非 null。
 * 线程 1 被线程 2 预占。
 * 线程 2 检查实例是否为 null。因为实例不为 null，线程 2 将 instance 引用返回给一个构造完整但部分初始化了的 Singleton 对象。 
 * 线程 2 被线程 1 预占。
@@ -95,7 +129,6 @@ instance != null 后直接返回, 如果在 synchronized 外加 if(instance == n
 
 这段伪代码不仅是可能的，而且是一些 JIT 编译器上真实发生的。执行的顺序是颠倒的，但鉴于当前的内存模型，
 这也是允许发生的。JIT 编译器的这一行为使双重检查锁定的问题只不过是一次学术实践而已。
-
 
 我们只需要将 instance 变量声明成 volatile 就可以了。
 
@@ -124,7 +157,7 @@ instance != null 后直接返回, 如果在 synchronized 外加 if(instance == n
 量的写操作都先行发生于后面对这个变量的读操作（这里的“后面”是时间上的先后顺序）。
 
 但是特别注意在 Java 5 以前的版本使用了 volatile 的双检锁还是有问题的。其原因是 Java 5 以前的
- JMM （Java 内存模型）是存在缺陷的，即时将变量声明成 volatile 也不能完全避免重排序，主要是 
+ JMM （Java 内存模型）是存在缺陷的，即时将变量声明成 volatile 也不能完全避免重排序，主要是
 volatile 变量前后的代码仍然存在重排序问题。这个 volatile 屏蔽重排序的问题在 Java 5 中才得以
 修复，所以在这之后才可以放心使用 volatile。
 
@@ -150,28 +183,35 @@ volatile 变量前后的代码仍然存在重排序问题。这个 volatile 屏�
 这种写法如果完美的话，就没必要在啰嗦那么多双检锁的问题了。缺点是它不是一种懒加载模式（lazy initialization），
 单例会在加载类后一开始就被初始化，即使客户端没有调用 getInstance()方法。饿汉式的创建方式在一些场景中将无法使用：
 譬如 Singleton 实例的创建是依赖参数或者配置文件的，在 getInstance() 之前必须调用某个方法设置参数给它，那样这
-种单例写法就无法使用了。 
+种单例写法就无法使用了。
 
 ##静态内部类 static nested class
 
-我比较倾向于使用静态内部类的方法，这种方法也是《Effective Java》上所推荐的。也叫 Initialization on Demand 
+我比较倾向于使用静态内部类的方法，这种方法也是《Effective Java》上所推荐的。也叫 Initialization on Demand
 Holder (IODH) 方法
 
 ```java
 
     public class Singleton {
-        private static class SingletonHolder {
-            private static final Singleton INSTANCE = new Singleton();
-        }
+
         private Singleton (){}
+
         public static final Singleton getInstance() {
             return SingletonHolder.INSTANCE;
+        }
+
+        private static class SingletonHolder {
+            private static final Singleton INSTANCE = new Singleton();
         }
     }
 ```
 
 依靠JVM对内部静态类&静态成员初始化的顺序机制来实现的。 这种实现方法虽然有一定的局限性，比如，只能用于静态成员，
-ClassLoader要确定等等，但是这种实现方法已经足够好了。 
+ClassLoader 要确定等等，但是这种实现方法已经足够好了。
+
+* 多线程安全
+* 延迟加载
+* 耗时短(与双重检查相比)
 
 ##枚举 Enum
 
@@ -180,8 +220,17 @@ ClassLoader要确定等等，但是这种实现方法已经足够好了。
 ```java
     public enum EasySingleton{
         INSTANCE;
+        public void operate(){}
     }
 ```
+
+优点
+
+* 简洁
+
+缺点
+
+* 占用内存大(Android官方不推荐使用枚举)
 
 我们可以通过EasySingleton.INSTANCE来访问实例，这比调用getInstance()方法简单多了。创建枚举默认就是线
 程安全的，所以不需要担心double checked locking，而且还能防止反序列化导致重新创建新的对象。但是还是很少
@@ -196,28 +245,28 @@ if (instance == null) 转换为了线程局部范围内来作。这里的ThreadL
 都较慢，但这与 volatile 相比却是安全的。
 
 ```
-    public class Singleton {  
-         private static final ThreadLocal perThreadInstance = new ThreadLocal();  
-         private static Singleton singleton ;  
-         private Singleton() {}  
-       
-         public static Singleton  getInstance() {  
-              if (perThreadInstance.get() == null){  
-               // 每个线程第一次都会调用  
-                   createInstance();  
-              }  
-              return singleton;  
-         }  
-      
-         private static  final void createInstance() {  
-              synchronized (Singleton.class) {  
-                   if (singleton == null){  
-                        singleton = new Singleton();  
-                   }  
-             }  
-             perThreadInstance.set(perThreadInstance);  
-         }  
-    }  
+    public class Singleton {
+         private static final ThreadLocal perThreadInstance = new ThreadLocal();
+         private static Singleton singleton ;
+         private Singleton() {}
+
+         public static Singleton  getInstance() {
+              if (perThreadInstance.get() == null){
+               // 每个线程第一次都会调用
+                   createInstance();
+              }
+              return singleton;
+         }
+
+         private static  final void createInstance() {
+              synchronized (Singleton.class) {
+                   if (singleton == null){
+                        singleton = new Singleton();
+                   }
+             }
+             perThreadInstance.set(perThreadInstance);
+         }
+    }
 ```
 
 多线程要点:
@@ -228,6 +277,38 @@ if (instance == null) 转换为了线程局部范围内来作。这里的ThreadL
 可见性: 变量的可见性
 同步原理: 将多线程强制对该同步块的访问变成单线程
 
+###缓存
+
+
+```
+    public class Singleton {
+
+        private static final String KEY = "instance";
+
+        private static Map<String, Singleton> map = new HashMap<>();
+
+        private Singleton(){}
+
+        public static Singleton getInstance(){
+            Singleton singleton ;
+            if (map.get(KEY) == null){
+                singleton = new Singleton();
+                map.put(KEY, singleton);
+            } else {
+                singleton = map.get(KEY);
+            }
+            return singleton;
+        }
+    }
+```
+
+优点
+
+* 线程安全
+
+缺点
+
+* 内存占用高
 
 
 ##单例测试
