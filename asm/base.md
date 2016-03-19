@@ -447,3 +447,5 @@ $ g++ -std=c++11 -o move2.s move2.cpp
 ##参考
 
 http://highscalability.com/blog/2009/2/18/numbers-everyone-should-know.html
+
+[intel 手册](http://ref.x86asm.net/index.html)
