@@ -1,16 +1,878 @@
-
 ##预备知识
 
-内核态
-用户态
-为什么要划分系统级别?
-如何区分内核和用户态? cs:eip
+* 内核态
+* 用户态
+* 为什么要划分系统级别?
+* 如何区分内核和用户态? cs:eip
+* 寄存器上下文
+* 上下文切换
+
+
+* 系统调用号
+* 中断向量
+* 调度时机
+
+系统调用过程中一定发生中断, 在系统调用执行过程中可能有进程的切换.
 
 
 ##什么是 system-call
 
 
 先看 [linux 系统支持系统调用表](https://github.com/torvalds/linux/blob/master/arch/x86/entry/syscalls/syscall_64.tbl)
+
+[32 位系统调用表](https://github.com/torvalds/linux/blob/master/arch/x86/entry/syscalls/syscall_32.tbl)
+
+上面的系统调用并不需要完全掌握, 可以慢慢来, 当需要记住的 64 位系统有 326 个系统调用.
+
+
+##系统调用表
+
+当程序从用户态调用系统调用时, 这个指令导致一个异常, 由于异常都是在内核中处理的,
+因此就会导致从用户态到内核态的转换, 系统调用权限也随之由用户态转换到内核态.
+
+但转到内核态执行什么指令, 从哪开始呢? 内核包含一个 sys_call_table, 保存在
+[arch/x86/entry/syscall_64.c](http://code.woboq.org/linux/linux/arch/x86/entry/syscall_64.c.html)
+
+```
+[linux/arch/x86/entry/syscall_64.c](https://github.com/torvalds/linux/blob/master/arch/x86/entry/syscall_64.c)
+
+#define __SYSCALL_COMMON(nr, sym, compat) __SYSCALL_64(nr, sym, compat)
+
+#ifdef CONFIG_X86_X32_ABI
+# define __SYSCALL_X32(nr, sym, compat) __SYSCALL_64(nr, sym, compat)
+#else
+# define __SYSCALL_X32(nr, sym, compat) /* nothing */
+#endif
+
+#define __SYSCALL_64(nr, sym, compat) extern asmlinkage long sym(unsigned long, unsigned long, unsigned long, unsigned long, unsigned long, unsigned long) ;
+#include <asm/syscalls_64.h>
+#undef __SYSCALL_64
+
+#define __SYSCALL_64(nr, sym, compat) [nr] = sym,
+
+asmlinkage const sys_call_ptr_t sys_call_table[__NR_syscall_max+1] = {
+	/*
+	 * Smells like a compiler bug -- it doesn't work
+	 * when the & below is removed.
+	 */
+	[0 ... __NR_syscall_max] = &sys_ni_syscall,
+#include <asm/syscalls_64.h>
+};
+
+
+[linux/include/generated/asm-offsets.h]
+#define __NR_syscall_max 545 /* sizeof(syscalls_64) - 1	# */
+#define NR_syscalls 546 /* sizeof(syscalls_64)	# */
+
+linux/arch/x86/include/asm/syscall.h
+typedef asmlinkage long (*sys_call_ptr_t)(unsigned long, unsigned long,
+					  unsigned long, unsigned long,
+unsigned long, unsigned long);
+
+
+[linux/kernel/sys_ni.c](http://code.woboq.org/linux/linux/kernel/sys_ni.c.html#sys_ni_syscall)
+
+/*  we can't #include <linux/syscalls.h> here,
+    but tell gcc to not warn with -Wmissing-prototypes  */
+asmlinkage long sys_ni_syscall(void);
+/*
+ * Non-implemented system calls get redirected here.
+ */
+asmlinkage long sys_ni_syscall(void)
+{
+	return -ENOSYS;
+}
+```
+
+其中 [0 ... __NR_syscall_max] = &sys_ni_syscall 是
+[gcc 扩展](https://gcc.gnu.org/onlinedocs/gcc/Designated-Inits.html).
+
+sys_ni_syscall 只是初始化 sys_call_table, 真正的初始化由
+[脚本](https://github.com/torvalds/linux/blob/master/arch/x86/entry/syscalls/syscalltbl.sh)
+以[文件](https://github.com/torvalds/linux/blob/master/arch/x86/entry/syscalls/syscall_64.tbl)
+为输入, 输出头文件[asm/syscalls_64.h](http://code.woboq.org/linux/linux/arch/x86/include/generated/asm/syscalls_64.h.html)
+
+最后, sys_call_table 变成了这样:
+
+```
+asmlinkage const sys_call_ptr_t sys_call_table[__NR_syscall_max+1] = {
+    [0 ... __NR_syscall_max] = &sys_ni_syscall,
+    [0] = sys_read,
+    [1] = sys_write,
+    [2] = sys_open,
+    ...
+    ...
+    ...
+};
+```
+
+###系统调用准备
+
+在控制器由用户态转到内核态后, 并不是立即就执行内核态系统调用表中的内核函数,
+原因是在系统调用完成之后还要返回用户态, 因此在调用内核系统调用函数之前, 必须
+做一些准备工作, 保持用户态的信息(堆栈, 寄存器)待系统调用完之后恢复现场.
+初始化内核, 寄存器,堆栈 等等.
+
+
+
+
+
+
+##系统调用分类
+
+###进程控制
+
+    load
+    execute
+    end, abort
+    create process (for example, fork on Unix-like systems, or NtCreateProcess in the Windows NT Native API)
+    terminate process
+    get/set process attributes
+    wait for time, wait event, signal event
+    allocate, free memory
+
+###文件管理
+
+    create file, delete file
+    open, close
+    read, write, reposition
+    get/set file attributes
+
+###设备管理
+
+    request device, release device
+    read, write, reposition
+    get/set device attributes
+    logically attach or detach devices
+
+###信息管理
+
+    get/set time or date
+    get/set system data
+    get/set process, file, or device attributes
+
+###通信
+
+    create, delete communication connection
+    send, receive messages
+    transfer status information
+    attach or detach remote devices
+
+
+
+###内核系统调用代码分析
+
+
+$ fgrep -r "SYSCALL_VECTOR" arch/x86/
+
+    arch/x86/lguest/boot.c:	.syscall_vec = SYSCALL_VECTOR,
+    arch/x86/lguest/boot.c:		if (i != SYSCALL_VECTOR)
+    arch/x86/kernel/irqinit.c:		/* IA32_SYSCALL_VECTOR could be used in trap_init already. */
+    arch/x86/kernel/traps.c:	set_system_intr_gate(IA32_SYSCALL_VECTOR, ia32_syscall);
+    arch/x86/kernel/traps.c:	set_bit(IA32_SYSCALL_VECTOR, used_vectors);
+    arch/x86/kernel/traps.c:	set_system_trap_gate(SYSCALL_VECTOR, &system_call);
+    arch/x86/kernel/traps.c:	set_bit(SYSCALL_VECTOR, used_vectors);
+    arch/x86/include/asm/irq_vectors.h:#define IA32_SYSCALL_VECTOR		0x80
+    arch/x86/include/asm/irq_vectors.h:# define SYSCALL_VECTOR			0x80
+
+###初始化
+
+```
+arch/x86/kernel/traps.c
+
+void __init trap_init(void)
+
+```
+syscall 的初始化 syscall_init 在 cpu_init 中.
+
+```
+    void syscall_init(void)
+    {
+    	/*
+    	 * LSTAR and STAR live in a bit strange symbiosis.
+    	 * They both write to the same internal register. STAR allows to
+    	 * set CS/DS but only a 32bit target. LSTAR sets the 64bit rip.
+    	 */
+    	wrmsr(MSR_STAR, 0, (__USER32_CS << 16) | __KERNEL_CS);
+    	wrmsrl(MSR_LSTAR, (unsigned long)entry_SYSCALL_64);
+
+    #ifdef CONFIG_IA32_EMULATION
+    	wrmsrl(MSR_CSTAR, (unsigned long)entry_SYSCALL_compat);
+    	/*
+    	 * This only works on Intel CPUs.
+    	 * On AMD CPUs these MSRs are 32-bit, CPU truncates MSR_IA32_SYSENTER_EIP.
+    	 * This does not cause SYSENTER to jump to the wrong location, because
+    	 * AMD doesn't allow SYSENTER in long mode (either 32- or 64-bit).
+    	 */
+    	wrmsrl_safe(MSR_IA32_SYSENTER_CS, (u64)__KERNEL_CS);
+    	wrmsrl_safe(MSR_IA32_SYSENTER_ESP, 0ULL);
+    	wrmsrl_safe(MSR_IA32_SYSENTER_EIP, (u64)entry_SYSENTER_compat);
+    #else
+    	wrmsrl(MSR_CSTAR, (unsigned long)ignore_sysret);
+    	wrmsrl_safe(MSR_IA32_SYSENTER_CS, (u64)GDT_ENTRY_INVALID_SEG);
+    	wrmsrl_safe(MSR_IA32_SYSENTER_ESP, 0ULL);
+    	wrmsrl_safe(MSR_IA32_SYSENTER_EIP, 0ULL);
+    #endif
+
+    	/* Flags to clear on syscall */
+    	wrmsrl(MSR_SYSCALL_MASK,
+    	       X86_EFLAGS_TF|X86_EFLAGS_DF|X86_EFLAGS_IF|
+    	       X86_EFLAGS_IOPL|X86_EFLAGS_AC|X86_EFLAGS_NT);
+    }
+```
+
+分析 TODO
+    	wrmsr(MSR_STAR, 0, (__USER32_CS << 16) | __KERNEL_CS);
+    	wrmsrl(MSR_LSTAR, (unsigned long)entry_SYSCALL_64);
+
+```
+/*
+ * 64-bit SYSCALL instruction entry. Up to 6 arguments in registers.
+ *
+ * 64-bit SYSCALL saves rip to rcx, clears rflags.RF, then saves rflags to r11,
+ * then loads new ss, cs, and rip from previously programmed MSRs.
+ * rflags gets masked by a value from another MSR (so CLD and CLAC
+ * are not needed). SYSCALL does not save anything on the stack
+ * and does not change rsp.
+ *
+ * Registers on entry:
+ * rax  system call number
+ * rcx  return address
+ * r11  saved rflags (note: r11 is callee-clobbered register in C ABI)
+ * rdi  arg0
+ * rsi  arg1
+ * rdx  arg2
+ * r10  arg3 (needs to be moved to rcx to conform to C ABI)
+ * r8   arg4
+ * r9   arg5
+ * (note: r12-r15, rbp, rbx are callee-preserved in C ABI)
+ *
+ * Only called from user space.
+ *
+ * When user can change pt_regs->foo always force IRET. That is because
+ * it deals with uncanonical addresses better. SYSRET has trouble
+ * with them due to bugs in both AMD and Intel CPUs.
+ * 也许你很好奇上面寄存器的分配为什么是这样, 其实就是约定. 具体参考
+ * [这里](https://en.wikipedia.org/wiki/X86_calling_conventions#x86-64_calling_conventions)
+ */
+
+ENTRY(system_call)
+	CFI_STARTPROC	simple
+	CFI_SIGNAL_FRAME
+	CFI_DEF_CFA	rsp,KERNEL_STACK_OFFSET
+	CFI_REGISTER	rip,rcx
+	/*CFI_REGISTER	rflags,r11*/
+	SWAPGS_UNSAFE_STACK
+	/*
+	 * A hypervisor implementation might want to use a label
+	 * after the swapgs, so that it can do the swapgs
+	 * for the guest and jump here on syscall.
+	 */
+GLOBAL(system_call_after_swapgs)
+
+	movq	%rsp,PER_CPU_VAR(old_rsp)
+	movq	PER_CPU_VAR(kernel_stack),%rsp
+	/*
+	 * No need to follow this irqs off/on section - it's straight
+	 * and short:
+	 */
+	ENABLE_INTERRUPTS(CLBR_NONE)
+	SAVE_ARGS 8, 0, rax_enosys=1
+	movq_cfi rax,(ORIG_RAX-ARGOFFSET)
+	movq  %rcx,RIP-ARGOFFSET(%rsp)
+	CFI_REL_OFFSET rip,RIP-ARGOFFSET
+	testl $_TIF_WORK_SYSCALL_ENTRY,TI_flags+THREAD_INFO(%rsp,RIP-ARGOFFSET)
+	jnz tracesys
+system_call_fastpath:
+#if __SYSCALL_MASK == ~0
+	cmpq $__NR_syscall_max,%rax
+#else
+	andl $__SYSCALL_MASK,%eax
+	cmpl $__NR_syscall_max,%eax
+#endif
+	ja ret_from_sys_call  /* and return regs->ax */
+	movq %r10,%rcx
+	call *sys_call_table(,%rax,8)  # XXX:	 rip relative //系统调用表
+	movq %rax,RAX-ARGOFFSET(%rsp)
+/*
+ * Syscall return path ending with SYSRET (fast path)
+ * Has incomplete stack frame and undefined top of stack.
+ */
+ret_from_sys_call:
+	movl $_TIF_ALLWORK_MASK,%edi
+	/* edi:	flagmask */
+sysret_check:
+	LOCKDEP_SYS_EXIT
+	DISABLE_INTERRUPTS(CLBR_NONE)
+	TRACE_IRQS_OFF
+	movl TI_flags+THREAD_INFO(%rsp,RIP-ARGOFFSET),%edx
+	andl %edi,%edx
+	jnz  sysret_careful
+	CFI_REMEMBER_STATE
+	/*
+	 * sysretq will re-enable interrupts:
+	 */
+	TRACE_IRQS_ON
+	movq RIP-ARGOFFSET(%rsp),%rcx
+	CFI_REGISTER	rip,rcx
+	RESTORE_ARGS 1,-ARG_SKIP,0
+	/*CFI_REGISTER	rflags,r11*/
+	movq	PER_CPU_VAR(old_rsp), %rsp
+	USERGS_SYSRET64
+
+	CFI_RESTORE_STATE
+	/* Handle reschedules */
+	/* edx:	work, edi: workmask */
+sysret_careful:
+	bt $TIF_NEED_RESCHED,%edx
+	jnc sysret_signal
+	TRACE_IRQS_ON
+	ENABLE_INTERRUPTS(CLBR_NONE)
+	pushq_cfi %rdi
+	SCHEDULE_USER
+	popq_cfi %rdi
+	jmp sysret_check
+
+	/* Handle a signal */
+sysret_signal:
+	TRACE_IRQS_ON
+	ENABLE_INTERRUPTS(CLBR_NONE)
+#ifdef CONFIG_AUDITSYSCALL
+	bt $TIF_SYSCALL_AUDIT,%edx
+	jc sysret_audit
+#endif
+	/*
+	 * We have a signal, or exit tracing or single-step.
+	 * These all wind up with the iret return path anyway,
+	 * so just join that path right now.
+	 */
+	FIXUP_TOP_OF_STACK %r11, -ARGOFFSET
+	jmp int_check_syscall_exit_work
+
+#ifdef CONFIG_AUDITSYSCALL
+	/*
+	 * Return fast path for syscall audit.  Call __audit_syscall_exit()
+	 * directly and then jump back to the fast path with TIF_SYSCALL_AUDIT
+	 * masked off.
+	 */
+sysret_audit:
+	movq RAX-ARGOFFSET(%rsp),%rsi	/* second arg, syscall return value */
+	cmpq $-MAX_ERRNO,%rsi	/* is it < -MAX_ERRNO? */
+	setbe %al		/* 1 if so, 0 if not */
+	movzbl %al,%edi		/* zero-extend that into %edi */
+	call __audit_syscall_exit
+	movl $(_TIF_ALLWORK_MASK & ~_TIF_SYSCALL_AUDIT),%edi
+	jmp sysret_check
+#endif	/* CONFIG_AUDITSYSCALL */
+
+	/* Do syscall tracing */
+tracesys:
+	leaq -REST_SKIP(%rsp), %rdi
+	movq $AUDIT_ARCH_X86_64, %rsi
+	call syscall_trace_enter_phase1
+	test %rax, %rax
+	jnz tracesys_phase2		/* if needed, run the slow path */
+	LOAD_ARGS 0			/* else restore clobbered regs */
+	jmp system_call_fastpath	/*      and return to the fast path */
+
+tracesys_phase2:
+	SAVE_REST
+	FIXUP_TOP_OF_STACK %rdi
+	movq %rsp, %rdi
+	movq $AUDIT_ARCH_X86_64, %rsi
+	movq %rax,%rdx
+	call syscall_trace_enter_phase2
+
+	/*
+	 * Reload arg registers from stack in case ptrace changed them.
+	 * We don't reload %rax because syscall_trace_entry_phase2() returned
+	 * the value it wants us to use in the table lookup.
+	 */
+	LOAD_ARGS ARGOFFSET, 1
+	RESTORE_REST
+#if __SYSCALL_MASK == ~0
+	cmpq $__NR_syscall_max,%rax
+#else
+	andl $__SYSCALL_MASK,%eax
+	cmpl $__NR_syscall_max,%eax
+#endif
+	ja   int_ret_from_sys_call	/* RAX(%rsp) is already set */
+	movq %r10,%rcx	/* fixup for C */
+	call *sys_call_table(,%rax,8)  //系统调用表
+	movq %rax,RAX-ARGOFFSET(%rsp)
+	/* Use IRET because user could have changed frame */
+
+/*
+ * Syscall return path ending with IRET.
+ * Has correct top of stack, but partial stack frame.
+ */
+GLOBAL(int_ret_from_sys_call)
+	DISABLE_INTERRUPTS(CLBR_NONE)
+	TRACE_IRQS_OFF
+	movl $_TIF_ALLWORK_MASK,%edi
+	/* edi:	mask to check */
+GLOBAL(int_with_check)
+	LOCKDEP_SYS_EXIT_IRQ
+	GET_THREAD_INFO(%rcx)
+	movl TI_flags(%rcx),%edx
+	andl %edi,%edx
+	jnz   int_careful
+	andl    $~TS_COMPAT,TI_status(%rcx)
+	jmp   retint_swapgs
+
+	/* Either reschedule or signal or syscall exit tracking needed. */
+	/* First do a reschedule test. */
+	/* edx:	work, edi: workmask */
+int_careful:
+	bt $TIF_NEED_RESCHED,%edx
+	jnc  int_very_careful
+	TRACE_IRQS_ON
+	ENABLE_INTERRUPTS(CLBR_NONE)
+	pushq_cfi %rdi
+	SCHEDULE_USER
+	popq_cfi %rdi
+	DISABLE_INTERRUPTS(CLBR_NONE)
+	TRACE_IRQS_OFF
+	jmp int_with_check
+
+	/* handle signals and tracing -- both require a full stack frame */
+int_very_careful:
+	TRACE_IRQS_ON
+	ENABLE_INTERRUPTS(CLBR_NONE)
+int_check_syscall_exit_work:
+	SAVE_REST
+	/* Check for syscall exit trace */
+	testl $_TIF_WORK_SYSCALL_EXIT,%edx
+	jz int_signal
+	pushq_cfi %rdi
+	leaq 8(%rsp),%rdi	# &ptregs -> arg1
+	call syscall_trace_leave
+	popq_cfi %rdi
+	andl $~(_TIF_WORK_SYSCALL_EXIT|_TIF_SYSCALL_EMU),%edi
+	jmp int_restore_rest
+
+int_signal:
+	testl $_TIF_DO_NOTIFY_MASK,%edx
+	jz 1f
+	movq %rsp,%rdi		# &ptregs -> arg1
+	xorl %esi,%esi		# oldset -> arg2
+	call do_notify_resume
+1:	movl $_TIF_WORK_MASK,%edi
+int_restore_rest:
+	RESTORE_REST
+	DISABLE_INTERRUPTS(CLBR_NONE)
+	TRACE_IRQS_OFF
+	jmp int_with_check
+	CFI_ENDPROC
+END(system_call)
+```
+
+
+
+
+
+
+
+
+
+##一个系统调用实现的分析
+
+我们就以 write 为例
+
+```
+https://github.com/torvalds/linux/blob/master/fs/read_write.c
+
+SYSCALL_DEFINE3(read, unsigned int, fd, char __user *, buf, size_t, count)
+{
+	struct fd f = fdget_pos(fd);
+	ssize_t ret = -EBADF;
+
+	if (f.file) {
+		loff_t pos = file_pos_read(f.file);
+		ret = vfs_read(f.file, buf, count, &pos);
+		if (ret >= 0)
+			file_pos_write(f.file, pos);
+		fdput_pos(f);
+	}
+	return ret;
+}
+
+SYSCALL_DEFINE3(write, unsigned int, fd, const char __user *, buf,
+		size_t, count)
+{
+	struct fd f = fdget_pos(fd);
+	ssize_t ret = -EBADF;
+
+	if (f.file) {
+		loff_t pos = file_pos_read(f.file);
+		ret = vfs_write(f.file, buf, count, &pos);
+		if (ret >= 0)
+			file_pos_write(f.file, pos);
+		fdput_pos(f);
+	}
+
+	return ret;
+}
+
+```
+
+```
+http://code.woboq.org/linux/linux/include/linux/syscalls.h.html
+
+/*
+ * __MAP - apply a macro to syscall arguments
+ * __MAP(n, m, t1, a1, t2, a2, ..., tn, an) will expand to
+ *    m(t1, a1), m(t2, a2), ..., m(tn, an)
+ * The first argument must be equal to the amount of type/name
+ * pairs given.  Note that this list of pairs (i.e. the arguments
+ * of __MAP starting at the third one) is in the same format as
+ * for SYSCALL_DEFINE<n>/COMPAT_SYSCALL_DEFINE<n>
+ */
+#define __MAP0(m,...)
+#define __MAP1(m,t,a) m(t,a)
+#define __MAP2(m,t,a,...) m(t,a), __MAP1(m,__VA_ARGS__)
+#define __MAP3(m,t,a,...) m(t,a), __MAP2(m,__VA_ARGS__)
+#define __MAP4(m,t,a,...) m(t,a), __MAP3(m,__VA_ARGS__)
+#define __MAP5(m,t,a,...) m(t,a), __MAP4(m,__VA_ARGS__)
+#define __MAP6(m,t,a,...) m(t,a), __MAP5(m,__VA_ARGS__)
+#define __MAP(n,...) __MAP##n(__VA_ARGS__)
+
+#define __SC_DECL(t, a)	t a
+#define __TYPE_IS_L(t)	(__same_type((t)0, 0L))
+#define __TYPE_IS_UL(t)	(__same_type((t)0, 0UL))
+#define __TYPE_IS_LL(t) (__same_type((t)0, 0LL) || __same_type((t)0, 0ULL))
+#define __SC_LONG(t, a) __typeof(__builtin_choose_expr(__TYPE_IS_LL(t), 0LL, 0L)) a
+#define __SC_CAST(t, a)	(t) a
+#define __SC_ARGS(t, a)	a
+#define __SC_TEST(t, a) (void)BUILD_BUG_ON_ZERO(!__TYPE_IS_LL(t) && sizeof(t) > sizeof(long))
+
+#define SYSCALL_DEFINE1(name, ...) SYSCALL_DEFINEx(1, _##name, __VA_ARGS__)
+#define SYSCALL_DEFINE2(name, ...) SYSCALL_DEFINEx(2, _##name, __VA_ARGS__)
+#define SYSCALL_DEFINE3(name, ...) SYSCALL_DEFINEx(3, _##name, __VA_ARGS__)
+#define SYSCALL_DEFINE4(name, ...) SYSCALL_DEFINEx(4, _##name, __VA_ARGS__)
+#define SYSCALL_DEFINE5(name, ...) SYSCALL_DEFINEx(5, _##name, __VA_ARGS__)
+#define SYSCALL_DEFINE6(name, ...) SYSCALL_DEFINEx(6, _##name, __VA_ARGS__)
+#define SYSCALL_DEFINEx(x, sname, ...)				\
+	SYSCALL_METADATA(sname, x, __VA_ARGS__)			\
+	__SYSCALL_DEFINEx(x, sname, __VA_ARGS__)
+#define __PROTECT(...) asmlinkage_protect(__VA_ARGS__)
+#define __SYSCALL_DEFINEx(x, name, ...)					\
+	asmlinkage long sys##name(__MAP(x,__SC_DECL,__VA_ARGS__))	\
+		__attribute__((alias(__stringify(SyS##name))));		\
+	static inline long SYSC##name(__MAP(x,__SC_DECL,__VA_ARGS__));	\
+	asmlinkage long SyS##name(__MAP(x,__SC_LONG,__VA_ARGS__));	\
+	asmlinkage long SyS##name(__MAP(x,__SC_LONG,__VA_ARGS__))	\
+	{								\
+		long ret = SYSC##name(__MAP(x,__SC_CAST,__VA_ARGS__));	\
+		__MAP(x,__SC_TEST,__VA_ARGS__);				\
+		__PROTECT(x, ret,__MAP(x,__SC_ARGS,__VA_ARGS__));	\
+		return ret;						\
+	}								\
+	static inline long SYSC##name(__MAP(x,__SC_DECL,__VA_ARGS__))
+
+#ifdef CONFIG_FTRACE_SYSCALLS //跟踪系统调用
+#define SYSCALL_METADATA(sname, nb, ...)			\
+	static const char *types_##sname[] = {			\
+		__MAP(nb,__SC_STR_TDECL,__VA_ARGS__)		\
+	};							\
+	static const char *args_##sname[] = {			\
+		__MAP(nb,__SC_STR_ADECL,__VA_ARGS__)		\
+	};							\
+	SYSCALL_TRACE_ENTER_EVENT(sname);			\
+	SYSCALL_TRACE_EXIT_EVENT(sname);			\
+	static struct syscall_metadata __used			\
+	  __syscall_meta_##sname = {				\
+		.name 		= "sys"#sname,			\
+		.syscall_nr	= -1,	/* Filled in at boot */	\
+		.nb_args 	= nb,				\
+		.types		= nb ? types_##sname : NULL,	\
+		.args		= nb ? args_##sname : NULL,	\
+		.enter_event	= &event_enter_##sname,		\
+		.exit_event	= &event_exit_##sname,		\
+		.enter_fields	= LIST_HEAD_INIT(__syscall_meta_##sname.enter_fields), \
+	};							\
+	static struct syscall_metadata __used			\
+	  __attribute__((section("__syscalls_metadata")))	\
+	 *__p_syscall_meta_##sname = &__syscall_meta_##sname;
+#else
+#define SYSCALL_METADATA(sname, nb, ...)
+#endif
+
+
+http://code.woboq.org/linux/linux/include/linux/compiler.h.html
+
+# define __user	__attribute__((noderef, address_space(1))) //主要供 sparse 工具使用
+```
+
+由于 SYSCALL_DEFINEx 调用了 SYSCALL_METADATA 和 __SYSCALL_DEFINEx
+
+由于 SYSCALL_METADATA 是跟踪系统调用的, 因此我们注意关注 __SYSCALL_DEFINEx
+
+对于 __MAP 宏变化过程
+
+其中 __MAP(3,__SC_DECL, unsigned int, fd, const char __user *, buf, size_t, count) 翻译为
+
+    unsigned int fd, const char __user * buf, size_t, count
+
+
+其中 __MAP(3,__SC_LONG, unsigned int, fd, const char __user *, buf, size_t, count) 翻译为
+
+    __typeof(__builtin_choose_expr(__TYPE_IS_LL(unsigned int), 0LL, 0L)) fd \
+            __builtin_choose_expr(__TYPE_IS_LL(const char __user *), 0LL, 0L)) buf \
+            __builtin_choose_expr(__TYPE_IS_LL(size_t), 0LL, 0L)) count
+
+因此, wirte 系统调用编译之后变为:
+
+```
+	asmlinkage long sys_write(unsigned int fd, const char __user * buf, size_t, count)
+		__attribute__((alias(__stringify(SyS_write))));
+	static inline long SYSC_write(unsigned int fd, const char __user * buf, size_t, count);
+
+    //SyS_write 函数定义
+	asmlinkage long SyS_write(
+            __typeof(__builtin_choose_expr((__same_type((unsigned int)0, 0LL)
+                        || __same_type((unsigned int)0, 0ULL)),
+                0LL, 0L))
+            fd,
+
+            __typeof(__builtin_choose_expr((__same_type((const char __user *)0, 0LL)
+                        || __same_type((const char __user *)0, 0ULL)),
+                0LL, 0L))
+            buf,
+
+            __typeof(__builtin_choose_expr((__same_type((size_t)0, 0LL)
+                        || __same_type((size_t)0, 0ULL)),
+                0LL, 0L))
+            count
+    );
+
+    //SyS_write 函数定义
+	asmlinkage long SyS_write(
+            __typeof(__builtin_choose_expr((__same_type((unsigned int)0, 0LL)
+                        || __same_type((unsigned int)0, 0ULL)),
+                0LL, 0L))
+            fd,
+
+            __typeof(__builtin_choose_expr((__same_type((const char __user *)0, 0LL)
+                        || __same_type((const char __user *)0, 0ULL)),
+                0LL, 0L))
+            buf,
+
+            __typeof(__builtin_choose_expr((__same_type((size_t)0, 0LL)
+                        || __same_type((size_t)0, 0ULL)),
+                0LL, 0L))
+            count
+    )
+	{
+		long ret = SYSC_write(
+                (unsigned int) fd,
+                (const char __user *) buf,
+                (size_t) count
+        );
+
+        (void)BUILD_BUG_ON_ZERO(
+                !(__same_type((unsigned int)0, 0LL) || __same_type((unsigned int)0, 0ULL))
+                && sizeof(unsigned int) > sizeof(long)),
+
+        (void)BUILD_BUG_ON_ZERO(
+                !__same_type((const char __user *)0, 0LL) || __same_type((const char __user *)0, 0ULL))
+                && sizeof(const char __user *) > sizeof(long)),
+
+        (void)BUILD_BUG_ON_ZERO(
+                !__same_type((size_t)0, 0LL) || __same_type((size_t)0, 0ULL))
+                && sizeof(size_t) > sizeof(long)),
+
+        asmlinkage_protect(3, ret, fd, buf, count)
+		return ret;
+	}
+	static inline long SYSC_write(unsigned int fd, const char __user * buf, size_t, count)
+    //之前是函数头的解析后的结果, 下面是函数体
+    {
+        /*
+         * struct files_struct files;
+         * v = (unsigned long) files ->fdt->fd[fd]
+         * struct fd f = (struct fd){(struct file *)v &~3, v&3 }
+         *
+         * struct fd {
+         *      struct file *file;
+         *      unsigned int flags;
+         * };
+         */
+
+        struct fd f = fdget_pos(fd);
+        ssize_t ret = -EBADF;
+
+        if (f.file) {
+            //获取当前文件的位置 : pos = file->f_pos;
+            loff_t pos = file_pos_read(f.file);
+
+            //将 buf 内容 count 个 byte 从 pos 开始写入 f.file. 详细待后续文件系统部分分析.
+            ret = vfs_write(f.file, buf, count, &pos);
+
+            //如果写入文件字节数大于等于 0
+            if (ret >= 0)
+                //更改当前文件的 pos:  file->f_pos = pos;
+                file_pos_write(f.file, pos);
+            //解锁, 实际调用 fput, 待后续文件系统部分分析.
+            fdput_pos(f);
+        }
+
+        return ret;
+    }
+```
+
+至此, write 系统调用分析完成, 细节见注释.
+
+当然你也可以根据自己的偏好分析其中一个系统调用的具体实现, 相信付出是高回报的.
+
+##系统调用的例子
+
+注: 当一个函数多余 6 个参数, 其余参数将被放在栈
+
+``` test.c
+
+#include <stdio.h>
+#include <string.h>
+#include <fcntl.h>
+
+int main(int argc, char **argv)
+{
+
+    const char *str = "hello systemcall";
+    size_t len = strlen(str) + 1;
+    ssize_t ret = 1;
+
+    int fd = open("tmp1", O_WRONLY | O_CREAT | O_APPEND);
+
+    printf("write %d return %lu\n", fd, ret);
+    //write(fd, str, len);
+    asm volatile (
+        "mov  %1,%%edi\n\t"  //fd 传递给第一个参数
+        "movq %2,%%rsi\n\t"  //str 地址传递给第二个参数
+        "movq %3,%%rdx\n\t"  //len 传递给第三个参数
+        "movq $1,%%rax\n\t"  //系统调用号 1
+        "syscall\n\t"
+        "movq %%rax, %0\n\t" //将write 返回结果给 ret
+        :"=p"(ret)
+        :"b"(fd), "p"(str), "d"(len)
+        );
+    printf("write return %lu\n", ret);
+    return 0;
+}
+```
+$ gcc -o test test.c
+
+$ ./test
+
+    write 3 return 4195536
+    write return 17
+
+$ ltrace ./test
+
+    __libc_start_main(0x4005bd, 1, 0x7fff40ba1148, 0x400650 <unfinished ...>
+    strlen("hello systemcall")                                                             = 16
+    open("tmp", 1024, 04200000)                                                            = 3
+    +++ exited (status 0) +++
+
+$ ltrace ./test
+
+    ...
+    __libc_start_main(0x4005bd, 1, 0x7fff15fa4358, 0x400650 <unfinished ...>
+    strlen("hello systemcall")                                                             = 16
+    open("tmp", 1024, 04200000 <unfinished ...>
+    SYS_open("tmp", 1024, 04200000)                                                        = 3
+    <... open resumed> )                                                                   = 3
+    SYS_write(3, "hello systemcall", 17 <no return ...>
+    +++ exited (status 0) +++
+
+$ strace ./test
+
+    open("tmp1", O_WRONLY|O_CREAT|O_APPEND, 0200000020400000) = 3
+    fstat(1, {st_mode=S_IFCHR|0620, st_rdev=makedev(136, 10), ...}) = 0
+    mmap(NULL, 4096, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0) = 0x7f34c0174000
+    write(1, "write 3 return 4195536\n", 23write 3 return 4195536
+    ) = 23
+    write(3, "hello systemcall\n", 17)      = 17
+    write(1, "write return 17\n", 16write return 17
+    )       = 16
+    exit_group(0)                           = ?
+    +++ exited with 0 +++
+
+##如何查看一个进程的系统调用
+
+strace 是查看系统调用的利器, 既可以查看正在调用的进程的系统调用, 也可以看正在运行的程序
+正在执行的系统调用.
+
+$ ltrace -S param    //查看即将执行的程序 param 涉及的系统调用
+$ ltrace -p -S param    //查看即将执行的程序 param 涉及的系统调用
+$ strace param    //查看即将执行的程序 param 涉及的系统调用
+$ strace -p PID   //查看进程号 PID 正在执行的系统调用
+
+更多参考 man strace man lstrace
+
+###proc 文件系统
+
+系统调用在系统中无处不在, 我们知道在 /proc 文件系统保持了进程信息.
+
+比如 /proc/1 代表进程号 1 的进程信息.
+
+$ cat /proc/1/comm
+init
+
+$ sudo cat /proc/1/syscall
+23 0x1d 0x7fff4930fa40 0x7fff4930fac0 0x7fff4930fb40 0x0 0x7fbeb3e03420 0x7fff4930f7e8 0x7fbeb2093d83
+
+其中 23 就是系统调用号. 想知道其他进程正在执行的系统调用, 是不是很容易了:)
+
+##系统调用的意义
+
+操作系统为用户态进程与硬件设备进行交互提供了一组接口——系统调用
+
+* 把用户从底层的硬件编程中解放出来
+* 极大的提高了系统的安全性
+* 使用户程序具有可移植性
+
+##API 与系统调用的关系
+
+应用编程接口 (application program interface, API) 和系统调用是不同的
+
+* API只是一个函数定义
+* 系统调用通过软中断向内核发出一个明确的请求
+
+Libc库定义的一些API引用了封装例程(wrapper routine,唯一目的就是发布系统调用)
+
+* 一般每个系统调用对应一个封装例程
+* 库再用这些封装例程定义出给用户的API
+
+不是每个API都对应一个特定的系统调用
+
+* API可能直接提供用户态的服务 如,一些数学函数
+* 一个单独的API可能调用几个系统调用
+* 不同的API可能调用了同一个系统调用
+
+返回值
+
+* 大部分封装例程返回一个整数,其值的含义依赖于相应的系统调用
+* -1在多数情况下表示内核不能满足进程的请求
+* Libc中定义的errno变量包含特定的出错码
+
+此外, 系统调用必须尽量快, 因此必须尽量小, 而标准库负责参数校验等工作.
+
+##总结
+
+当用户态进程调用一个系统调用时,CPU切换到内核态并开始执行一个内核函数。
+在Linux中是通过执行int $0x80来执行系统调用的, 这条汇编指令产生向量为
+128的编程异常
+
+##参考
+
+https://0xax.gitbooks.io/linux-insides/content/SysCall/syscall-1.html
+https://en.wikipedia.org/wiki/System_call
+
+
+##附录
+
+###系统调用表
 
     0	common	read			sys_read
     1	common	write			sys_write
@@ -378,256 +1240,3 @@
     543	x32	io_setup		compat_sys_io_setup
     544	x32	io_submit		compat_sys_io_submit
     545	x32	execveat		compat_sys_execveat/ptregs
-
-[32 位系统调用表](https://github.com/torvalds/linux/blob/master/arch/x86/entry/syscalls/syscall_32.tbl)
-
-上面的系统调用并不需要完全掌握, 可以慢慢来, 当需要记住的 64 位系统有 326 个系统调用.
-
-##系统调用分类
-
-###进程控制
-
-    load
-    execute
-    end, abort
-    create process (for example, fork on Unix-like systems, or NtCreateProcess in the Windows NT Native API)
-    terminate process
-    get/set process attributes
-    wait for time, wait event, signal event
-    allocate, free memory
-
-###文件管理
-
-    create file, delete file
-    open, close
-    read, write, reposition
-    get/set file attributes
-
-###设备管理
-
-    request device, release device
-    read, write, reposition
-    get/set device attributes
-    logically attach or detach devices
-
-###信息管理
-
-    get/set time or date
-    get/set system data
-    get/set process, file, or device attributes
-
-###通信
-
-    create, delete communication connection
-    send, receive messages
-    transfer status information
-    attach or detach remote devices
-
-
-
-###内核系统调用代码分析
-
-syscall 的初始化 syscall_init 在 cpu_init 中.
-
-```
-    void syscall_init(void)
-    {
-    	/*
-    	 * LSTAR and STAR live in a bit strange symbiosis.
-    	 * They both write to the same internal register. STAR allows to
-    	 * set CS/DS but only a 32bit target. LSTAR sets the 64bit rip.
-    	 */
-    	wrmsr(MSR_STAR, 0, (__USER32_CS << 16) | __KERNEL_CS);
-    	wrmsrl(MSR_LSTAR, (unsigned long)entry_SYSCALL_64);
-
-    #ifdef CONFIG_IA32_EMULATION
-    	wrmsrl(MSR_CSTAR, (unsigned long)entry_SYSCALL_compat);
-    	/*
-    	 * This only works on Intel CPUs.
-    	 * On AMD CPUs these MSRs are 32-bit, CPU truncates MSR_IA32_SYSENTER_EIP.
-    	 * This does not cause SYSENTER to jump to the wrong location, because
-    	 * AMD doesn't allow SYSENTER in long mode (either 32- or 64-bit).
-    	 */
-    	wrmsrl_safe(MSR_IA32_SYSENTER_CS, (u64)__KERNEL_CS);
-    	wrmsrl_safe(MSR_IA32_SYSENTER_ESP, 0ULL);
-    	wrmsrl_safe(MSR_IA32_SYSENTER_EIP, (u64)entry_SYSENTER_compat);
-    #else
-    	wrmsrl(MSR_CSTAR, (unsigned long)ignore_sysret);
-    	wrmsrl_safe(MSR_IA32_SYSENTER_CS, (u64)GDT_ENTRY_INVALID_SEG);
-    	wrmsrl_safe(MSR_IA32_SYSENTER_ESP, 0ULL);
-    	wrmsrl_safe(MSR_IA32_SYSENTER_EIP, 0ULL);
-    #endif
-
-    	/* Flags to clear on syscall */
-    	wrmsrl(MSR_SYSCALL_MASK,
-    	       X86_EFLAGS_TF|X86_EFLAGS_DF|X86_EFLAGS_IF|
-    	       X86_EFLAGS_IOPL|X86_EFLAGS_AC|X86_EFLAGS_NT);
-    }
-```
-
-
-
-/*
- * 64-bit SYSCALL instruction entry. Up to 6 arguments in registers.
- *
- * 64-bit SYSCALL saves rip to rcx, clears rflags.RF, then saves rflags to r11,
- * then loads new ss, cs, and rip from previously programmed MSRs.
- * rflags gets masked by a value from another MSR (so CLD and CLAC
- * are not needed). SYSCALL does not save anything on the stack
- * and does not change rsp.
- *
- * Registers on entry:
- * rax  system call number
- * rcx  return address
- * r11  saved rflags (note: r11 is callee-clobbered register in C ABI)
- * rdi  arg0
- * rsi  arg1
- * rdx  arg2
- * r10  arg3 (needs to be moved to rcx to conform to C ABI)
- * r8   arg4
- * r9   arg5
- * (note: r12-r15, rbp, rbx are callee-preserved in C ABI)
- *
- * Only called from user space.
- *
- * When user can change pt_regs->foo always force IRET. That is because
- * it deals with uncanonical addresses better. SYSRET has trouble
- * with them due to bugs in both AMD and Intel CPUs.
- */
-
-也许你很好奇上面寄存器的分配为什么是这样, 其实就是约定. 具体参考
-[这里](https://en.wikipedia.org/wiki/X86_calling_conventions#x86-64_calling_conventions)
-
-
-
-###寄存器上下文
-
-###上下文切换
-
-
-
-###一个系统调用实现的分析
-
-我们就以 write 为例
-
-
-
-
-当然你也可以根据自己的偏好分析其中一个系统调用的具体实现, 相信
-付出是高回报的.
-
-###系统调用的例子
-
-当一个函数多余 6 个参数, 其余参数将被放在栈
-
-
-``` test.c
-
-#include <stdio.h>
-#include <string.h>
-#include <fcntl.h>
-
-int main(int argc, char **argv)
-{
-
-    const char *str = "hello systemcall";
-    size_t len = strlen(str) + 1;
-    ssize_t ret = 1;
-
-    int fd = open("tmp1", O_WRONLY | O_CREAT | O_APPEND);
-
-    printf("write %d return %lu\n", fd, ret);
-    //write
-    asm volatile (
-        "mov  %1,%%edi\n\t"
-        "movq %2,%%rsi\n\t"
-        "movq %3,%%rdx\n\t"
-        "movq $1,%%rax\n\t"
-        "syscall\n\t"
-        "movq %%rax, %0\n\t"
-        :"=p"(ret)
-        :"b"(fd), "p"(str), "d"(len)
-        );
-    printf("write return %lu\n", ret);
-    return 0;
-}
-```
-$ gcc -o test test.c
-
-$ ./test
-
-    write 3 return 4195536
-    write return 17
-
-$ ltrace ./test
-
-    __libc_start_main(0x4005bd, 1, 0x7fff40ba1148, 0x400650 <unfinished ...>
-    strlen("hello systemcall")                                                             = 16
-    open("tmp", 1024, 04200000)                                                            = 3
-    +++ exited (status 0) +++
-
-$ ltrace ./test
-
-    ...
-    __libc_start_main(0x4005bd, 1, 0x7fff15fa4358, 0x400650 <unfinished ...>
-    strlen("hello systemcall")                                                             = 16
-    open("tmp", 1024, 04200000 <unfinished ...>
-    SYS_open("tmp", 1024, 04200000)                                                        = 3
-    <... open resumed> )                                                                   = 3
-    SYS_write(3, "hello systemcall", 17 <no return ...>
-    +++ exited (status 0) +++
-
-$ strace ./test
-
-    open("tmp1", O_WRONLY|O_CREAT|O_APPEND, 0200000020400000) = 3
-    fstat(1, {st_mode=S_IFCHR|0620, st_rdev=makedev(136, 10), ...}) = 0
-    mmap(NULL, 4096, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0) = 0x7f34c0174000
-    write(1, "write 3 return 4195536\n", 23write 3 return 4195536
-    ) = 23
-    write(3, "hello systemcall\n", 17)      = 17
-    write(1, "write return 17\n", 16write return 17
-    )       = 16
-    exit_group(0)                           = ?
-    +++ exited with 0 +++
-
-###如何查看一个进程的系统调用
-
-strace 是查看系统调用的利器, 既可以查看正在调用的进程的系统调用, 也可以看正在运行的程序
-正在执行的系统调用.
-
-$ ltrace -S param    //查看即将执行的程序 param 涉及的系统调用
-$ ltrace -p -S param    //查看即将执行的程序 param 涉及的系统调用
-$ strace param    //查看即将执行的程序 param 涉及的系统调用
-$ strace -p PID   //查看进程号 PID 正在执行的系统调用
-
-更多参考 man strace man lstrace
-
-###proc 文件系统
-
-系统调用在系统中无处不在, 我们知道在 /proc 文件系统保持了进程信息.
-
-比如 /proc/1 代表进程号 1 的进程信息.
-
-$ cat /proc/1/comm
-init
-
-$ sudo cat /proc/1/syscall
-23 0x1d 0x7fff4930fa40 0x7fff4930fac0 0x7fff4930fb40 0x0 0x7fbeb3e03420 0x7fff4930f7e8 0x7fbeb2093d83
-
-其中 23 就是系统调用号. 想知道其他进程正在执行的系统调用, 是不是很容易了:)
-
-
-
-
-
-###系统调用的意义
-
-
-###API 与系统调用的关系
-
-The main reason of this is simple: a system call must be performed quickly, very quickly. As a system call must be quick, it must be small. The standard library takes responsibility to perform system calls with the correct set parameters and makes different checks before it will call the given system call.
-
-##参考
-
-https://0xax.gitbooks.io/linux-insides/content/SysCall/syscall-1.html
-https://en.wikipedia.org/wiki/System_call
