@@ -6,117 +6,27 @@
 * 如何区分内核和用户态? cs:eip
 * 寄存器上下文
 * 上下文切换
-
-
 * 系统调用号
 * 中断向量
 * 调度时机
 
+
+现代计算机机中都有几种不同的指令级别，在高执行级别下，代码可以执行特权指令，
+访问任意的物理地址，这种CPU执行级别就对应着内核态，而在相应的低级别执行状态下，
+代码的掌控范围会受到限制，只能在对应级别允许的范围内活动。举例：Intrel x86 CPU
+有四种不同的执行级别0-3，Linux只使用了其中的0级和3级来分别表示内核态和用户态。
+操作系统让系统本身更为稳定的方式，这样程序员自己写的用户态代码很难把整个系统都
+给搞崩溃，内核的代码经过仔细的分析有专业的人员写的代码会更加健壮一些，整个程序
+会更加稳定一些，注意：这里所说的地址空间是逻辑地址而不是物理地址。
+
+
+用户态和内核态的很显著的区分就是：CS和EIP， CS寄存器的最低两位表明了当前代码的
+特权级别；CPU每条指令的读取都是通过CS:EIP这两个寄存器：其中CS是代码段选择寄存器，
+EIP是偏移量寄存器，上述判断由硬件完成。一般来说在Linux中，地址空间是一个显著的
+标志：0xc0000000以上的地址空间只能在内核态下访问，0xc00000000-0xbfffffff的地址
+空间在两种状态下都可以访问。
+
 系统调用过程中一定发生中断, 在系统调用执行过程中可能有进程的切换.
-
-
-##什么是 system-call
-
-
-先看 [linux 系统支持系统调用表](https://github.com/torvalds/linux/blob/master/arch/x86/entry/syscalls/syscall_64.tbl)
-
-[32 位系统调用表](https://github.com/torvalds/linux/blob/master/arch/x86/entry/syscalls/syscall_32.tbl)
-
-上面的系统调用并不需要完全掌握, 可以慢慢来, 当需要记住的 64 位系统有 326 个系统调用.
-
-
-##系统调用表
-
-当程序从用户态调用系统调用时, 这个指令导致一个异常, 由于异常都是在内核中处理的,
-因此就会导致从用户态到内核态的转换, 系统调用权限也随之由用户态转换到内核态.
-
-但转到内核态执行什么指令, 从哪开始呢? 内核包含一个 sys_call_table, 保存在
-[arch/x86/entry/syscall_64.c](http://code.woboq.org/linux/linux/arch/x86/entry/syscall_64.c.html)
-
-```
-[linux/arch/x86/entry/syscall_64.c](https://github.com/torvalds/linux/blob/master/arch/x86/entry/syscall_64.c)
-
-#define __SYSCALL_COMMON(nr, sym, compat) __SYSCALL_64(nr, sym, compat)
-
-#ifdef CONFIG_X86_X32_ABI
-# define __SYSCALL_X32(nr, sym, compat) __SYSCALL_64(nr, sym, compat)
-#else
-# define __SYSCALL_X32(nr, sym, compat) /* nothing */
-#endif
-
-#define __SYSCALL_64(nr, sym, compat) extern asmlinkage long sym(unsigned long, unsigned long, unsigned long, unsigned long, unsigned long, unsigned long) ;
-#include <asm/syscalls_64.h>
-#undef __SYSCALL_64
-
-#define __SYSCALL_64(nr, sym, compat) [nr] = sym,
-
-asmlinkage const sys_call_ptr_t sys_call_table[__NR_syscall_max+1] = {
-	/*
-	 * Smells like a compiler bug -- it doesn't work
-	 * when the & below is removed.
-	 */
-	[0 ... __NR_syscall_max] = &sys_ni_syscall,
-#include <asm/syscalls_64.h>
-};
-
-
-[linux/include/generated/asm-offsets.h]
-#define __NR_syscall_max 545 /* sizeof(syscalls_64) - 1	# */
-#define NR_syscalls 546 /* sizeof(syscalls_64)	# */
-
-linux/arch/x86/include/asm/syscall.h
-typedef asmlinkage long (*sys_call_ptr_t)(unsigned long, unsigned long,
-					  unsigned long, unsigned long,
-unsigned long, unsigned long);
-
-
-[linux/kernel/sys_ni.c](http://code.woboq.org/linux/linux/kernel/sys_ni.c.html#sys_ni_syscall)
-
-/*  we can't #include <linux/syscalls.h> here,
-    but tell gcc to not warn with -Wmissing-prototypes  */
-asmlinkage long sys_ni_syscall(void);
-/*
- * Non-implemented system calls get redirected here.
- */
-asmlinkage long sys_ni_syscall(void)
-{
-	return -ENOSYS;
-}
-```
-
-其中 [0 ... __NR_syscall_max] = &sys_ni_syscall 是
-[gcc 扩展](https://gcc.gnu.org/onlinedocs/gcc/Designated-Inits.html).
-
-sys_ni_syscall 只是初始化 sys_call_table, 真正的初始化由
-[脚本](https://github.com/torvalds/linux/blob/master/arch/x86/entry/syscalls/syscalltbl.sh)
-以[文件](https://github.com/torvalds/linux/blob/master/arch/x86/entry/syscalls/syscall_64.tbl)
-为输入, 输出头文件[asm/syscalls_64.h](http://code.woboq.org/linux/linux/arch/x86/include/generated/asm/syscalls_64.h.html)
-
-最后, sys_call_table 变成了这样:
-
-```
-asmlinkage const sys_call_ptr_t sys_call_table[__NR_syscall_max+1] = {
-    [0 ... __NR_syscall_max] = &sys_ni_syscall,
-    [0] = sys_read,
-    [1] = sys_write,
-    [2] = sys_open,
-    ...
-    ...
-    ...
-};
-```
-
-###系统调用准备
-
-在控制器由用户态转到内核态后, 并不是立即就执行内核态系统调用表中的内核函数,
-原因是在系统调用完成之后还要返回用户态, 因此在调用内核系统调用函数之前, 必须
-做一些准备工作, 保持用户态的信息(堆栈, 寄存器)待系统调用完之后恢复现场.
-初始化内核, 寄存器,堆栈 等等.
-
-
-
-
-
 
 ##系统调用分类
 
@@ -158,34 +68,50 @@ asmlinkage const sys_call_ptr_t sys_call_table[__NR_syscall_max+1] = {
     transfer status information
     attach or detach remote devices
 
+##什么是 system-call
+
+linux 系统[64 位系统调用表](https://github.com/torvalds/linux/blob/master/arch/x86/entry/syscalls/syscall_64.tbl)
+
+[32 位系统调用表](https://github.com/torvalds/linux/blob/master/arch/x86/entry/syscalls/syscall_32.tbl)
+
+上面的系统调用并不需要完全掌握, 可以慢慢来, 当需要记住的 64 位系统有 326 个系统调用.
 
 
-###内核系统调用代码分析
+##系统调用原理分析
 
+1. int 0x80 中断与系统调用是在什么时候, 如何建立起关联的, 具体相关代码在哪里?
 
-$ fgrep -r "SYSCALL_VECTOR" arch/x86/
+在内核初始化(start_kernel) 过程中通过中断向量建立关联, 在系统初始化已经建立了
+中断 int 0x80 与系统调用的关联, 在后续, 一旦用户态出现 int 0x80 的指令, CPU 就
+立即跳转到系统调用对应的地址.
 
-    arch/x86/lguest/boot.c:	.syscall_vec = SYSCALL_VECTOR,
-    arch/x86/lguest/boot.c:		if (i != SYSCALL_VECTOR)
-    arch/x86/kernel/irqinit.c:		/* IA32_SYSCALL_VECTOR could be used in trap_init already. */
-    arch/x86/kernel/traps.c:	set_system_intr_gate(IA32_SYSCALL_VECTOR, ia32_syscall);
-    arch/x86/kernel/traps.c:	set_bit(IA32_SYSCALL_VECTOR, used_vectors);
-    arch/x86/kernel/traps.c:	set_system_trap_gate(SYSCALL_VECTOR, &system_call);
-    arch/x86/kernel/traps.c:	set_bit(SYSCALL_VECTOR, used_vectors);
-    arch/x86/include/asm/irq_vectors.h:#define IA32_SYSCALL_VECTOR		0x80
-    arch/x86/include/asm/irq_vectors.h:# define SYSCALL_VECTOR			0x80
+2. 系统调用处理过程如何与具体的系统调用函数关联起来的, 代码在哪里, 整个系统调用具体做了哪些工作?
+
+通过系统调用号关联起来, 在 arch/x86/entry/entry_64.S, 现场保存, 执行系统调用, 现场恢复.
+
+3. 在系统调用过程中还会存在其他中断么?
+
+会
+
+4. 在系统调用过程中可能发生其他系统相关导致进程切换吗?
+
+会, 如果发生调度或有一些信号需要处理, 具体参考 int_ret_from_sys_call_irqs_off 及 int_ret_from_sys_call
+此外, 进程的切换也会导致进程上下文的切换
+
+###系统调用入口
+
+从内核初始化在 init/main.c 中的 start_kernel 函数. 其中一个初始化是 setup_arch,
+对于 x86 来说, 实际调用的是 arch/x86/kernel/setup.c 中的 setup_arch 函数. 而
+setup_arch 又调用了 early_trap_init 函数. 这部分与系统开启相关. 这里不详细讨论.
+
 
 ###初始化
 
-```
-arch/x86/kernel/traps.c
-
-void __init trap_init(void)
+syscall 的初始化 syscall_init 在 arch/x86/kernel/cpu/common.c 的 cpu_init 函数中.
 
 ```
-syscall 的初始化 syscall_init 在 cpu_init 中.
+linux/arch/x86/kernel/cpu/common.c
 
-```
     void syscall_init(void)
     {
     	/*
@@ -196,7 +122,7 @@ syscall 的初始化 syscall_init 在 cpu_init 中.
     	wrmsr(MSR_STAR, 0, (__USER32_CS << 16) | __KERNEL_CS);
     	wrmsrl(MSR_LSTAR, (unsigned long)entry_SYSCALL_64);
 
-    #ifdef CONFIG_IA32_EMULATION
+    #ifdef CONFIG_IA32_EMULATION //允许 64 位系统运行 32 位程序
     	wrmsrl(MSR_CSTAR, (unsigned long)entry_SYSCALL_compat);
     	/*
     	 * This only works on Intel CPUs.
@@ -207,8 +133,9 @@ syscall 的初始化 syscall_init 在 cpu_init 中.
     	wrmsrl_safe(MSR_IA32_SYSENTER_CS, (u64)__KERNEL_CS);
     	wrmsrl_safe(MSR_IA32_SYSENTER_ESP, 0ULL);
     	wrmsrl_safe(MSR_IA32_SYSENTER_EIP, (u64)entry_SYSENTER_compat);
-    #else
+    #else //不允许 64 位系统运行 32 程序
     	wrmsrl(MSR_CSTAR, (unsigned long)ignore_sysret);
+        //[GDT](https://en.wikipedia.org/wiki/Global_Descriptor_Table)
     	wrmsrl_safe(MSR_IA32_SYSENTER_CS, (u64)GDT_ENTRY_INVALID_SEG);
     	wrmsrl_safe(MSR_IA32_SYSENTER_ESP, 0ULL);
     	wrmsrl_safe(MSR_IA32_SYSENTER_EIP, 0ULL);
@@ -219,11 +146,132 @@ syscall 的初始化 syscall_init 在 cpu_init 中.
     	       X86_EFLAGS_TF|X86_EFLAGS_DF|X86_EFLAGS_IF|
     	       X86_EFLAGS_IOPL|X86_EFLAGS_AC|X86_EFLAGS_NT);
     }
+
+
+linux/arch/x86/include/asm/segment.h
+
+    #define __KERNEL_CS			(GDT_ENTRY_KERNEL_CS*8)
+    #define __USER32_CS			(GDT_ENTRY_DEFAULT_USER32_CS*8 + 3)
+
+linux/arch/x86/include/uapi/asm/processor-flags.h
+
+    #define X86_EFLAGS_TF		_BITUL(X86_EFLAGS_TF_BIT)
+    #define X86_EFLAGS_DF		_BITUL(X86_EFLAGS_DF_BIT)
+    #define X86_EFLAGS_IF		_BITUL(X86_EFLAGS_IF_BIT)
+    #define X86_EFLAGS_AC		_BITUL(X86_EFLAGS_AC_BIT)
+    #define X86_EFLAGS_IOPL		(_AC(3,UL) << X86_EFLAGS_IOPL_BIT)
+
+linux/arch/x86/kernel/cpu/msr.h
+
+
+    static inline void native_write_msr(unsigned int msr,
+    				    unsigned low, unsigned high)
+    {
+        //Write the value in EDX:EAX to MSR specified by ECX. MSR[ECX] = EDX:EAX;
+    	asm volatile(""wrmsr"" : : ""c"" (msr), ""a""(low), ""d"" (high) : ""memory"");
+    	if (msr_tracepoint_active(__tracepoint_read_msr))
+    		do_trace_write_msr(msr, ((u64)high << 32 | low), 0);
+    }
+
+    /* Can be uninlined because referenced by paravirt */
+    notrace static inline int native_write_msr_safe(unsigned int msr,
+    					unsigned low, unsigned high)
+    {
+    	int err;
+    	asm volatile(""2: wrmsr ; xor %[err],%[err]\n""
+    		     ""1:\n\t""
+    		     "".section .fixup,\"ax\"\n\t""
+    		     ""3:  mov %[fault],%[err] ; jmp 1b\n\t""
+    		     "".previous\n\t""
+    		     _ASM_EXTABLE(2b, 3b)
+    		     : [err] ""=a"" (err)
+    		     : ""c"" (msr), ""0"" (low), ""d"" (high),
+    		       [fault] ""i"" (-EIO)
+    		     : ""memory"");
+    	if (msr_tracepoint_active(__tracepoint_read_msr))
+    		do_trace_write_msr(msr, ((u64)high << 32 | low), err);
+    	return err;
+    }
+
+    static inline void wrmsr(unsigned msr, unsigned low, unsigned high)
+    {
+    	native_write_msr(msr, low, high);
+    }
+
+    static inline void wrmsrl(unsigned msr, u64 val)
+    {
+    	native_write_msr(msr, (u32)(val & 0xffffffffULL), (u32)(val >> 32));
+    }
+
+    /* wrmsr with exception handling */
+    static inline int wrmsr_safe(unsigned msr, unsigned low, unsigned high)
+    {
+    	return native_write_msr_safe(msr, low, high);
+    }
+
+    #define wrmsrl_safe(msr, val) wrmsr_safe((msr), (u32)(val),		\
+    					     (u32)((val) >> 32))
+
+linux/arch/x86/entry/entry_64.S 1485 行
+
+    ENTRY(ignore_sysret)
+    	mov	$-ENOSYS, %eax
+    	sysret
+    END(ignore_sysret)
+
 ```
 
-分析 TODO
-    	wrmsr(MSR_STAR, 0, (__USER32_CS << 16) | __KERNEL_CS);
-    	wrmsrl(MSR_LSTAR, (unsigned long)entry_SYSCALL_64);
+wrmsr(MSR_STAR, 0, (__USER32_CS << 16) | __KERNEL_CS);
+
+
+    MSR_STAR contains 63:48 bits of the user code segment. These bits
+    will be loaded to the CS and SS segment registers for the sysret
+    instruction which provides functionality to return from a system
+    call to user code with the related privilege. Also the MSR_STAR
+    contains 47:32 bits from the kernel code that will be used as the
+    base selector for CS and SS segment registers when user space
+    applications execute a system call.
+
+wrmsrl(MSR_LSTAR, (unsigned long)entry_SYSCALL_64);
+
+    加载 entry_SYSCALL_64 到 MSR_LSTAR 中, 其中 entry_SYSCALL_64 的定义
+    在[这里](http://code.woboq.org/linux/linux/arch/x86/entry/entry_64.S.html)
+
+wrmsrl(MSR_CSTAR, (unsigned long)entry_SYSCALL_compat);
+
+    加载 entry_SYSCALL_compat 到 MSR_LSTAR 中, 其中 entry_SYSCALL_64 的定义
+    在[这里](http://code.woboq.org/linux/linux/arch/x86/entry/entry_64.S.html)
+
+wrmsrl_safe(MSR_IA32_SYSENTER_CS, (u64)__KERNEL_CS);
+
+    保存 __KERNEL_CS 到 MSR_IA32_SYSENTER_CS
+
+wrmsrl_safe(MSR_IA32_SYSENTER_ESP, 0ULL);
+
+    MSR_IA32_SYSENTER_ESP 清零
+
+wrmsrl_safe(MSR_IA32_SYSENTER_EIP, (u64)entry_SYSENTER_compat);
+
+    MSR_IA32_SYSENTER_EIP 指向 entry_SYSCALL_compat
+
+wrmsrl(MSR_SYSCALL_MASK, X86_EFLAGS_TF|X86_EFLAGS_DF|X86_EFLAGS_IF| X86_EFLAGS_IOPL|X86_EFLAGS_AC|X86_EFLAGS_NT);
+
+    标志位保存到 MSR_SYSCALL_MASK 之后, 被清零.
+
+
+以上代码主要工作是将系统调用入口放入 MSR(model specific register)
+
+###系统调用准备
+
+在 Linux 内核处理系统调用中断之前, 在一个异常被处理之前, idtentry 宏执行准备工作;
+在中断被处理之前, interrupt 宏执行准备工作; 在系统调用被处理之前, entry_SYSCALL_64
+将做准备工作.
+
+在控制器由用户态转到内核态后, 并不是立即就执行内核态系统调用表中的内核函数,
+原因是在系统调用完成之后还要返回用户态, 因此在调用内核系统调用函数之前, 必须
+做一些准备工作, 保持用户态的信息(堆栈, 寄存器)待系统调用完之后恢复现场.
+初始化内核, 寄存器,堆栈 等等.
+
 
 ```
 /*
@@ -252,232 +300,464 @@ syscall 的初始化 syscall_init 在 cpu_init 中.
  * When user can change pt_regs->foo always force IRET. That is because
  * it deals with uncanonical addresses better. SYSRET has trouble
  * with them due to bugs in both AMD and Intel CPUs.
- * 也许你很好奇上面寄存器的分配为什么是这样, 其实就是约定. 具体参考
- * [这里](https://en.wikipedia.org/wiki/X86_calling_conventions#x86-64_calling_conventions)
  */
 
-ENTRY(system_call)
-	CFI_STARTPROC	simple
-	CFI_SIGNAL_FRAME
-	CFI_DEF_CFA	rsp,KERNEL_STACK_OFFSET
-	CFI_REGISTER	rip,rcx
-	/*CFI_REGISTER	rflags,r11*/
+ENTRY(entry_SYSCALL_64)
+	/*
+	 * Interrupts are off on entry.
+	 * We do not frame this tiny irq-off block with TRACE_IRQS_OFF/ON,
+	 * it is too small to ever cause noticeable irq latency.
+	 */
 	SWAPGS_UNSAFE_STACK
 	/*
 	 * A hypervisor implementation might want to use a label
 	 * after the swapgs, so that it can do the swapgs
 	 * for the guest and jump here on syscall.
 	 */
-GLOBAL(system_call_after_swapgs)
+GLOBAL(entry_SYSCALL_64_after_swapgs)
 
-	movq	%rsp,PER_CPU_VAR(old_rsp)
-	movq	PER_CPU_VAR(kernel_stack),%rsp
+    //将旧的 rsp 保存到 rsp_scratch
+	movq	%rsp, PER_CPU_VAR(rsp_scratch)
+
+    //rsp 指向 cpu_current_top_of_stack, 后续指令执行从 cpu_current_top_of_stack 地址开始
+	movq	PER_CPU_VAR(cpu_current_top_of_stack), %rsp
+
+	/* Construct struct pt_regs on stack */
+    //将 $__USER_DS 压栈
+	pushq	$__USER_DS			/* pt_regs->ss */
+
+    //将 rsp_scratch 压栈, 实际为旧的 rsp
+	pushq	PER_CPU_VAR(rsp_scratch)	/* pt_regs->sp */
+
 	/*
-	 * No need to follow this irqs off/on section - it's straight
-	 * and short:
+	 * Re-enable interrupts.
+	 * We use 'rsp_scratch' as a scratch space, hence irq-off block above
+	 * must execute atomically in the face of possible interrupt-driven
+	 * task preemption. We must enable interrupts only after we're done
+	 * with using rsp_scratch:
 	 */
+    //重新开启中断
 	ENABLE_INTERRUPTS(CLBR_NONE)
-	SAVE_ARGS 8, 0, rax_enosys=1
-	movq_cfi rax,(ORIG_RAX-ARGOFFSET)
-	movq  %rcx,RIP-ARGOFFSET(%rsp)
-	CFI_REL_OFFSET rip,RIP-ARGOFFSET
-	testl $_TIF_WORK_SYSCALL_ENTRY,TI_flags+THREAD_INFO(%rsp,RIP-ARGOFFSET)
-	jnz tracesys
-system_call_fastpath:
+
+    //保存通用寄存器, -ENOSYS, flags, 主要原因是系统调用会用到.
+    //rax - contains system call number;
+    //rcx - contains return address to the user space;
+    //r11 - contains register flags;
+    //rdi - contains first argument of a system call handler;
+    //rsi - contains second argument of a system call handler;
+    //rdx - contains third argument of a system call handler;
+    //r10 - contains fourth argument of a system call handler;
+    //r8 - contains fifth argument of a system call handler;
+    //r9 - contains sixth argument of a system call handler;
+    //其他寄存器 rbp, rbx, r12~r15 在 C-ABI 作为 callee-preserved
+    //其中 ENOSYS 是没有实现系统调用的错误代码
+	pushq	%r11				/* pt_regs->flags */
+	pushq	$__USER_CS			/* pt_regs->cs */
+	pushq	%rcx				/* pt_regs->ip */
+	pushq	%rax				/* pt_regs->orig_ax */
+	pushq	%rdi				/* pt_regs->di */
+	pushq	%rsi				/* pt_regs->si */
+	pushq	%rdx				/* pt_regs->dx */
+	pushq	%rcx				/* pt_regs->cx */
+	pushq	$-ENOSYS			/* pt_regs->ax */
+	pushq	%r8				    /* pt_regs->r8 */
+	pushq	%r9				    /* pt_regs->r9 */
+	pushq	%r10				/* pt_regs->r10 */
+	pushq	%r11				/* pt_regs->r11 */
+	sub	$(6*8), %rsp			/* pt_regs->bp, bx, r12-15 not saved */
+
+    //测试是否进入系统跟踪
+	testl	$_TIF_WORK_SYSCALL_ENTRY, ASM_THREAD_INFO(TI_flags, %rsp, SIZEOF_PTREGS)
+	jnz	tracesys
+
+entry_SYSCALL_64_fastpath:
+
 #if __SYSCALL_MASK == ~0
-	cmpq $__NR_syscall_max,%rax
+    //__NR_syscall_max 为最大系统调用号
+	cmpq	$__NR_syscall_max, %rax
 #else
-	andl $__SYSCALL_MASK,%eax
-	cmpl $__NR_syscall_max,%eax
+	andl	$__SYSCALL_MASK, %eax
+	cmpl	$__NR_syscall_max, %eax
 #endif
-	ja ret_from_sys_call  /* and return regs->ax */
-	movq %r10,%rcx
-	call *sys_call_table(,%rax,8)  # XXX:	 rip relative //系统调用表
-	movq %rax,RAX-ARGOFFSET(%rsp)
+    //CF, ZF 标志是否清零, 如果是跳到 1:
+	ja	1f				/* return -ENOSYS (already in pt_regs->ax) */
+
+    //如果有正确的系统调用, 第四个参数赋值给给 rcx.
+	movq	%r10, %rcx
+    //调用系统调用表中的函数, 系统调用表见前面分析.
+	call	*sys_call_table(, %rax, 8)
+
+    //#define RAX		10*8
+    //将 rax(系统调用返回结果)保存到 rsp
+	movq	%rax, RAX(%rsp)
+
+1:
 /*
- * Syscall return path ending with SYSRET (fast path)
- * Has incomplete stack frame and undefined top of stack.
+ * Syscall return path ending with SYSRET (fast path).
+ * Has incompletely filled pt_regs.
  */
-ret_from_sys_call:
-	movl $_TIF_ALLWORK_MASK,%edi
-	/* edi:	flagmask */
-sysret_check:
+    //见后面附注
 	LOCKDEP_SYS_EXIT
+	/*
+	 * We do not frame this tiny irq-off block with TRACE_IRQS_OFF/ON,
+	 * it is too small to ever cause noticeable irq latency.
+	 */
 	DISABLE_INTERRUPTS(CLBR_NONE)
-	TRACE_IRQS_OFF
-	movl TI_flags+THREAD_INFO(%rsp,RIP-ARGOFFSET),%edx
-	andl %edi,%edx
-	jnz  sysret_careful
-	CFI_REMEMBER_STATE
 	/*
-	 * sysretq will re-enable interrupts:
+	 * We must check ti flags with interrupts (or at least preemption)
+	 * off because we must *never* return to userspace without
+	 * processing exit work that is enqueued if we're preempted here.
+	 * In particular, returning to userspace with any of the one-shot
+	 * flags (TIF_NOTIFY_RESUME, TIF_USER_RETURN_NOTIFY, etc) set is
+	 * very bad.
 	 */
-	TRACE_IRQS_ON
-	movq RIP-ARGOFFSET(%rsp),%rcx
-	CFI_REGISTER	rip,rcx
-	RESTORE_ARGS 1,-ARG_SKIP,0
-	/*CFI_REGISTER	rflags,r11*/
-	movq	PER_CPU_VAR(old_rsp), %rsp
+	testl	$_TIF_ALLWORK_MASK, ASM_THREAD_INFO(TI_flags, %rsp, SIZEOF_PTREGS)
+
+    //TODO
+	jnz	int_ret_from_sys_call_irqs_off	/* Go to the slow path */
+
+    //TODO
+	RESTORE_C_REGS_EXCEPT_RCX_R11
+
+    //不恢复 rcx, r11, rsp
+	movq	RIP(%rsp), %rcx
+	movq	EFLAGS(%rsp), %r11
+	movq	RSP(%rsp), %rsp
+	/*
+	 * 64-bit SYSRET restores rip from rcx,
+	 * rflags from r11 (but RF and VM bits are forced to 0),
+	 * cs and ss are loaded from MSRs.
+	 * Restoration of rflags re-enables interrupts.
+	 *
+	 * NB: On AMD CPUs with the X86_BUG_SYSRET_SS_ATTRS bug, the ss
+	 * descriptor is not reinitialized.  This means that we should
+	 * avoid SYSRET with SS == NULL, which could happen if we schedule,
+	 * exit the kernel, and re-enter using an interrupt vector.  (All
+	 * interrupt entries on x86_64 set SS to NULL.)  We prevent that
+	 * from happening by reloading SS in __switch_to.  (Actually
+	 * detecting the failure in 64-bit userspace is tricky but can be
+	 * done.)
+	 */
 	USERGS_SYSRET64
-
-	CFI_RESTORE_STATE
-	/* Handle reschedules */
-	/* edx:	work, edi: workmask */
-sysret_careful:
-	bt $TIF_NEED_RESCHED,%edx
-	jnc sysret_signal
+GLOBAL(int_ret_from_sys_call_irqs_off)
 	TRACE_IRQS_ON
 	ENABLE_INTERRUPTS(CLBR_NONE)
-	pushq_cfi %rdi
-	SCHEDULE_USER
-	popq_cfi %rdi
-	jmp sysret_check
-
-	/* Handle a signal */
-sysret_signal:
-	TRACE_IRQS_ON
-	ENABLE_INTERRUPTS(CLBR_NONE)
-#ifdef CONFIG_AUDITSYSCALL
-	bt $TIF_SYSCALL_AUDIT,%edx
-	jc sysret_audit
-#endif
-	/*
-	 * We have a signal, or exit tracing or single-step.
-	 * These all wind up with the iret return path anyway,
-	 * so just join that path right now.
-	 */
-	FIXUP_TOP_OF_STACK %r11, -ARGOFFSET
-	jmp int_check_syscall_exit_work
-
-#ifdef CONFIG_AUDITSYSCALL
-	/*
-	 * Return fast path for syscall audit.  Call __audit_syscall_exit()
-	 * directly and then jump back to the fast path with TIF_SYSCALL_AUDIT
-	 * masked off.
-	 */
-sysret_audit:
-	movq RAX-ARGOFFSET(%rsp),%rsi	/* second arg, syscall return value */
-	cmpq $-MAX_ERRNO,%rsi	/* is it < -MAX_ERRNO? */
-	setbe %al		/* 1 if so, 0 if not */
-	movzbl %al,%edi		/* zero-extend that into %edi */
-	call __audit_syscall_exit
-	movl $(_TIF_ALLWORK_MASK & ~_TIF_SYSCALL_AUDIT),%edi
-	jmp sysret_check
-#endif	/* CONFIG_AUDITSYSCALL */
-
-	/* Do syscall tracing */
+	jmp int_ret_from_sys_call
+	/* Do syscall entry tracing */
 tracesys:
-	leaq -REST_SKIP(%rsp), %rdi
-	movq $AUDIT_ARCH_X86_64, %rsi
-	call syscall_trace_enter_phase1
-	test %rax, %rax
-	jnz tracesys_phase2		/* if needed, run the slow path */
-	LOAD_ARGS 0			/* else restore clobbered regs */
-	jmp system_call_fastpath	/*      and return to the fast path */
-
+	movq	%rsp, %rdi
+	movl	$AUDIT_ARCH_X86_64, %esi
+	call	syscall_trace_enter_phase1
+	test	%rax, %rax
+	jnz	tracesys_phase2			/* if needed, run the slow path */
+	RESTORE_C_REGS_EXCEPT_RAX		/* else restore clobbered regs */
+	movq	ORIG_RAX(%rsp), %rax
+	jmp	entry_SYSCALL_64_fastpath	/* and return to the fast path */
 tracesys_phase2:
-	SAVE_REST
-	FIXUP_TOP_OF_STACK %rdi
-	movq %rsp, %rdi
-	movq $AUDIT_ARCH_X86_64, %rsi
-	movq %rax,%rdx
-	call syscall_trace_enter_phase2
-
+	SAVE_EXTRA_REGS
+	movq	%rsp, %rdi
+	movl	$AUDIT_ARCH_X86_64, %esi
+	movq	%rax, %rdx
+	call	syscall_trace_enter_phase2
 	/*
-	 * Reload arg registers from stack in case ptrace changed them.
+	 * Reload registers from stack in case ptrace changed them.
 	 * We don't reload %rax because syscall_trace_entry_phase2() returned
 	 * the value it wants us to use in the table lookup.
 	 */
-	LOAD_ARGS ARGOFFSET, 1
-	RESTORE_REST
+	RESTORE_C_REGS_EXCEPT_RAX
+	RESTORE_EXTRA_REGS
 #if __SYSCALL_MASK == ~0
-	cmpq $__NR_syscall_max,%rax
+	cmpq	$__NR_syscall_max, %rax
 #else
-	andl $__SYSCALL_MASK,%eax
-	cmpl $__NR_syscall_max,%eax
+	andl	$__SYSCALL_MASK, %eax
+	cmpl	$__NR_syscall_max, %eax
 #endif
-	ja   int_ret_from_sys_call	/* RAX(%rsp) is already set */
-	movq %r10,%rcx	/* fixup for C */
-	call *sys_call_table(,%rax,8)  //系统调用表
-	movq %rax,RAX-ARGOFFSET(%rsp)
-	/* Use IRET because user could have changed frame */
-
+	ja	1f				/* return -ENOSYS (already in pt_regs->ax) */
+	movq	%r10, %rcx			/* fixup for C */
+	call	*sys_call_table(, %rax, 8)
+	movq	%rax, RAX(%rsp)
+1:
+	/* Use IRET because user could have changed pt_regs->foo */
 /*
  * Syscall return path ending with IRET.
- * Has correct top of stack, but partial stack frame.
+ * Has correct iret frame.
  */
 GLOBAL(int_ret_from_sys_call)
-	DISABLE_INTERRUPTS(CLBR_NONE)
-	TRACE_IRQS_OFF
-	movl $_TIF_ALLWORK_MASK,%edi
-	/* edi:	mask to check */
-GLOBAL(int_with_check)
-	LOCKDEP_SYS_EXIT_IRQ
-	GET_THREAD_INFO(%rcx)
-	movl TI_flags(%rcx),%edx
-	andl %edi,%edx
-	jnz   int_careful
-	andl    $~TS_COMPAT,TI_status(%rcx)
-	jmp   retint_swapgs
+	SAVE_EXTRA_REGS
+	movq	%rsp, %rdi
+	call	syscall_return_slowpath	/* returns with IRQs disabled */
+	RESTORE_EXTRA_REGS
+	TRACE_IRQS_IRETQ		/* we're about to change IF */
+	/*
+	 * Try to use SYSRET instead of IRET if we're returning to
+	 * a completely clean 64-bit userspace context.
+	 */
+	movq	RCX(%rsp), %rcx
+	movq	RIP(%rsp), %r11
+	cmpq	%rcx, %r11			/* RCX == RIP */
+	jne	opportunistic_sysret_failed
+	/*
+	 * On Intel CPUs, SYSRET with non-canonical RCX/RIP will #GP
+	 * in kernel space.  This essentially lets the user take over
+	 * the kernel, since userspace controls RSP.
+	 *
+	 * If width of "canonical tail" ever becomes variable, this will need
+	 * to be updated to remain correct on both old and new CPUs.
+	 */
+	.ifne __VIRTUAL_MASK_SHIFT - 47
+	.error ""virtual address width changed -- SYSRET checks need update""
+	.endif
+	/* Change top 16 bits to be the sign-extension of 47th bit */
+	shl	$(64 - (__VIRTUAL_MASK_SHIFT+1)), %rcx
+	sar	$(64 - (__VIRTUAL_MASK_SHIFT+1)), %rcx
+	/* If this changed %rcx, it was not canonical */
+	cmpq	%rcx, %r11
+	jne	opportunistic_sysret_failed
+	cmpq	$__USER_CS, CS(%rsp)		/* CS must match SYSRET */
+	jne	opportunistic_sysret_failed
+	movq	R11(%rsp), %r11
+	cmpq	%r11, EFLAGS(%rsp)		/* R11 == RFLAGS */
+	jne	opportunistic_sysret_failed
+	/*
+	 * SYSRET can't restore RF.  SYSRET can restore TF, but unlike IRET,
+	 * restoring TF results in a trap from userspace immediately after
+	 * SYSRET.  This would cause an infinite loop whenever #DB happens
+	 * with register state that satisfies the opportunistic SYSRET
+	 * conditions.  For example, single-stepping this user code:
+	 *
+	 *           movq	$stuck_here, %rcx
+	 *           pushfq
+	 *           popq %r11
+	 *   stuck_here:
+	 *
+	 * would never get past 'stuck_here'.
+	 */
+	testq	$(X86_EFLAGS_RF|X86_EFLAGS_TF), %r11
+	jnz	opportunistic_sysret_failed
+	/* nothing to check for RSP */
+	cmpq	$__USER_DS, SS(%rsp)		/* SS must match SYSRET */
+	jne	opportunistic_sysret_failed
+	/*
+	 * We win! This label is here just for ease of understanding
+	 * perf profiles. Nothing jumps here.
+	 */
+syscall_return_via_sysret:
+	/* rcx and r11 are already restored (see code above) */
+	RESTORE_C_REGS_EXCEPT_RCX_R11
+	movq	RSP(%rsp), %rsp
+	USERGS_SYSRET64
+opportunistic_sysret_failed:
+	SWAPGS
+	jmp	restore_c_regs_and_iret
+END(entry_SYSCALL_64)
 
-	/* Either reschedule or signal or syscall exit tracking needed. */
-	/* First do a reschedule test. */
-	/* edx:	work, edi: workmask */
-int_careful:
-	bt $TIF_NEED_RESCHED,%edx
-	jnc  int_very_careful
-	TRACE_IRQS_ON
-	ENABLE_INTERRUPTS(CLBR_NONE)
-	pushq_cfi %rdi
-	SCHEDULE_USER
-	popq_cfi %rdi
-	DISABLE_INTERRUPTS(CLBR_NONE)
-	TRACE_IRQS_OFF
-	jmp int_with_check
 
-	/* handle signals and tracing -- both require a full stack frame */
-int_very_careful:
-	TRACE_IRQS_ON
-	ENABLE_INTERRUPTS(CLBR_NONE)
-int_check_syscall_exit_work:
-	SAVE_REST
-	/* Check for syscall exit trace */
-	testl $_TIF_WORK_SYSCALL_EXIT,%edx
-	jz int_signal
-	pushq_cfi %rdi
-	leaq 8(%rsp),%rdi	# &ptregs -> arg1
-	call syscall_trace_leave
-	popq_cfi %rdi
-	andl $~(_TIF_WORK_SYSCALL_EXIT|_TIF_SYSCALL_EMU),%edi
-	jmp int_restore_rest
+linux/arch/x86/include/asm/irqflags.h
 
-int_signal:
-	testl $_TIF_DO_NOTIFY_MASK,%edx
-	jz 1f
-	movq %rsp,%rdi		# &ptregs -> arg1
-	xorl %esi,%esi		# oldset -> arg2
-	call do_notify_resume
-1:	movl $_TIF_WORK_MASK,%edi
-int_restore_rest:
-	RESTORE_REST
-	DISABLE_INTERRUPTS(CLBR_NONE)
-	TRACE_IRQS_OFF
-	jmp int_with_check
-	CFI_ENDPROC
-END(system_call)
+    /*
+     * Currently paravirt can't handle swapgs nicely when we
+     * don't have a stack we can rely on (such as a user space
+     * stack).  So we either find a way around these or just fault
+     * and emulate if a guest tries to call swapgs directly.
+     *
+     * Either way, this is a good way to document that we don't
+     * have a reliable stack. x86_64 only.
+     */
+    #define SWAPGS_UNSAFE_STACK	swapgs
+
+   [swapgs](http://www.felixcloutier.com/x86/SWAPGS.html)
+
+    SWAPGS exchanges the current GS base register value with the
+    value contained in MSR address C0000102H (IA32_KERNEL_GS_BASE).
+    The SWAPGS instruction is a privileged instruction intended
+    for use by system soft-ware.
+
+    When using SYSCALL to implement system calls, there is no kernel
+    stack at the OS entry point. Neither is there a straightforward
+    method to obtain a pointer to kernel structures from which the
+    kernel stack pointer could be read. Thus, the kernel cannot
+    save general purpose registers or reference memory.
+
+    By design, SWAPGS does not require any general purpose registers
+    or memory operands. No registers need to be saved before using
+    the instruction. SWAPGS exchanges the CPL 0 data pointer from
+    the IA32_KERNEL_GS_BASE MSR with the GS base register. The kernel
+    can then use the GS prefix on normal memory references to access
+    kernel data structures. Similarly, when the OS kernel is entered
+    using an interrupt or exception (where the kernel stack is already
+    set up), SWAPGS can be used to quickly get a pointer to the kernel
+    data structures.
+
+    The IA32_KERNEL_GS_BASE MSR itself is only accessible using
+    RDMSR/WRMSR instructions. Those instructions are only accessible
+    at privilege level 0. The WRMSR instruction ensures that the
+    IA32_KERNEL_GS_BASE MSR contains a canonical address.
+
+linux/arch/x86/include/asm/thread_info.h
+
+    /* work to do in syscall_trace_enter() */
+    #define _TIF_WORK_SYSCALL_ENTRY	\
+    	(_TIF_SYSCALL_TRACE | _TIF_SYSCALL_EMU | _TIF_SYSCALL_AUDIT |	\
+    	 _TIF_SECCOMP | _TIF_SINGLESTEP | _TIF_SYSCALL_TRACEPOINT |	\
+    	 _TIF_NOHZ)
+
+    /*
+     * ASM operand which evaluates to a 'thread_info' address of
+     * the current task, if it is known that "reg" is exactly "off"
+     * bytes below the top of the stack currently.
+     *
+     * ( The kernel stack's size is known at build time, it is usually
+     *   2 or 4 pages, and the bottom  of the kernel stack contains
+     *   the thread_info structure. So to access the thread_info very
+     *   quickly from assembly code we can calculate down from the
+     *   top of the kernel stack to the bottom, using constant,
+     *   build-time calculations only. )
+     *
+     * For example, to fetch the current thread_info->flags value into %eax
+     * on x86-64 defconfig kernels, in syscall entry code where RSP is
+     * currently at exactly SIZEOF_PTREGS bytes away from the top of the
+     * stack:
+     *
+     *      mov ASM_THREAD_INFO(TI_flags, %rsp, SIZEOF_PTREGS), %eax
+     *
+     * will translate to:
+     *
+     *      8b 84 24 b8 c0 ff ff      mov    -0x3f48(%rsp), %eax
+     *
+     * which is below the current RSP by almost 16K.
+     */
+    #define ASM_THREAD_INFO(field, reg, off) ((field)+(off)-THREAD_SIZE)(reg)
+
+linux/arch/x86/include/asm/thread_info.h
+
+    #define TI_flags 8 /* offsetof(struct thread_info, flags)	# */
+
+linux/arch/x86/entry/calling.h
+
+    #define SIZEOF_PTREGS	21*8
+
+linux/include/generated/asm-offsets.h
+
+    #define __NR_syscall_max 545 /* sizeof(syscalls_64) - 1	# */
+
+linux/arch/x86/include/asm/unistd.h
+
+    # ifdef CONFIG_X86_X32_ABI
+    #  define __SYSCALL_MASK (~(__X32_SYSCALL_BIT))
+    # else
+    #  define __SYSCALL_MASK (~0)
+    # endif
+
+    #define __X32_SYSCALL_BIT    0x40000000
+
+linux/arch/x86/include/asm/irqflags.h
+
+    #ifdef CONFIG_DEBUG_LOCK_ALLOC
+        #    define LOCKDEP_SYS_EXIT		call lockdep_sys_exit_thunk
+    #else
+        #    define LOCKDEP_SYS_EXIT
+    #endif
+
+    #define USERGS_SYSRET64                \
+        swapgs;                               \
+        sysretq;
 ```
 
+以上包含了系统调用整个生命周期的管理. 包括系统调用前的运行环境保存,
+执行系统调用, 系统调用之后的恢复等等.
 
 
+###系统调用表
+
+当程序从用户态调用系统调用时, 这个指令导致一个异常, 由于异常都是在内核中处理的,
+因此就会导致从用户态到内核态的转换, 系统调用权限也随之由用户态转换到内核态.
+
+但转到内核态执行什么指令, 从哪开始呢?  从前面的分析可知, 实际的系统调用是
+`call    *sys_call_table(, %rax, 8)`, 那么 sys_call_table 具体是什么, 保存在哪里,
+有哪些内容? 这是本部分要解决的问题.
+
+```
+[linux/arch/x86/entry/syscall_64.c](http://code.woboq.org/linux/linux/arch/x86/entry/syscall_64.c.html)
+
+    #define __SYSCALL_COMMON(nr, sym, compat) __SYSCALL_64(nr, sym, compat)
+
+    #ifdef CONFIG_X86_X32_ABI
+    # define __SYSCALL_X32(nr, sym, compat) __SYSCALL_64(nr, sym, compat)
+    #else
+    # define __SYSCALL_X32(nr, sym, compat) /* nothing */
+    #endif
+
+    #define __SYSCALL_64(nr, sym, compat) extern asmlinkage long sym(unsigned long, unsigned long, unsigned long, unsigned long, unsigned long, unsigned long) ;
+    #include <asm/syscalls_64.h>
+    #undef __SYSCALL_64
+
+    #define __SYSCALL_64(nr, sym, compat) [nr] = sym,
+
+    asmlinkage const sys_call_ptr_t sys_call_table[__NR_syscall_max+1] = {
+    	/*
+    	 * Smells like a compiler bug -- it doesn't work
+    	 * when the & below is removed.
+    	 */
+    	[0 ... __NR_syscall_max] = &sys_ni_syscall,
+    #include <asm/syscalls_64.h>
+    };
 
 
+[linux/include/generated/asm-offsets.h]
+
+    #define __NR_syscall_max 545 /* sizeof(syscalls_64) - 1	# */
+    #define NR_syscalls 546 /* sizeof(syscalls_64)	# */
+
+    linux/arch/x86/include/asm/syscall.h
+    typedef asmlinkage long (*sys_call_ptr_t)(unsigned long, unsigned long,
+    					  unsigned long, unsigned long,
+    unsigned long, unsigned long);
 
 
+[linux/kernel/sys_ni.c](http://code.woboq.org/linux/linux/kernel/sys_ni.c.html#sys_ni_syscall)
+
+    /*  we can't #include <linux/syscalls.h> here,
+        but tell gcc to not warn with -Wmissing-prototypes  */
+    asmlinkage long sys_ni_syscall(void);
+    /*
+     * Non-implemented system calls get redirected here.
+     */
+    asmlinkage long sys_ni_syscall(void)
+    {
+    	return -ENOSYS;
+    }
+```
+
+其中 [0 ... __NR_syscall_max] = &sys_ni_syscall 是
+[gcc 扩展](https://gcc.gnu.org/onlinedocs/gcc/Designated-Inits.html).
+
+sys_ni_syscall 只是初始化 sys_call_table, 真正的初始化由
+[脚本](https://github.com/torvalds/linux/blob/master/arch/x86/entry/syscalls/syscalltbl.sh)
+以[文件](https://github.com/torvalds/linux/blob/master/arch/x86/entry/syscalls/syscall_64.tbl)
+为输入, 输出头文件[asm/syscalls_64.h](http://code.woboq.org/linux/linux/arch/x86/include/generated/asm/syscalls_64.h.html)
+
+最后, sys_call_table 变成了这样:
+
+```
+asmlinkage const sys_call_ptr_t sys_call_table[__NR_syscall_max+1] = {
+    [0 ... __NR_syscall_max] = &sys_ni_syscall,
+    [0] = sys_read,
+    [1] = sys_write,
+    [2] = sys_open,
+    ...
+    ...
+    ...
+};
+```
+
+###一个系统调用实现的分析
 
 
-##一个系统调用实现的分析
-
-我们就以 write 为例
+系统调用从 syscall_init 开始, 之后定位系统调用到 entry_SYSCALL_64,
+entry_SYSCALL_64 包括了保存现场, 执行系统调用, 恢复现场的工作.
+而实际系统调用是通过定位 sys_call_table 中的元素完成的. 至此, 系统
+调用整个流程已经走完, 那么就以一个具体的系统调用为例. 解释 wirte
+系统调用做了哪些工作.
 
 ```
 https://github.com/torvalds/linux/blob/master/fs/read_write.c
@@ -824,7 +1104,25 @@ $ sudo cat /proc/1/syscall
 
 其中 23 就是系统调用号. 想知道其他进程正在执行的系统调用, 是不是很容易了:)
 
-##系统调用的意义
+
+###调试系统调用
+
+$sudo qemu-system-x86_64 -kernel linux-3.18.6/arch/x86/boot/bzImage -initrd rootfs.img -s -S
+
+$ gdb
+(gdb) file linux-3.18.6/vmlinux
+(gdb) target remote:1234
+(gdb) set arch i386:x86-64:intel
+(gdb) b sys_time
+(gdb) c
+(gdb) layout asm
+(gdb) stepi   //单步汇编指令
+(gdb) stepi 2 //两步汇编指令
+(gdb) nexti   //execute next instruction, stepping over function calls
+
+
+
+###系统调用的意义
 
 操作系统为用户态进程与硬件设备进行交互提供了一组接口——系统调用
 
@@ -858,17 +1156,35 @@ Libc库定义的一些API引用了封装例程(wrapper routine,唯一目的就�
 
 此外, 系统调用必须尽量快, 因此必须尽量小, 而标准库负责参数校验等工作.
 
+##遗留问题
+
+1.用户代码是如何进入 syscall_init 的? 当然是触发中断, 需要对中断进一步理解
+
+2.系统调用中发生调度, 对调度的影响, 如调度策略, 时机等等?
+
+3.超过6个怎么办？做一个把某个寄存器作为指针，指向一块内存，这样进入内核态
+之后可以访问所有内存空间，这就是系统调用的参数传递方式。以具体的实例说明
+
 ##总结
 
 当用户态进程调用一个系统调用时,CPU切换到内核态并开始执行一个内核函数。
 在Linux中是通过执行int $0x80来执行系统调用的, 这条汇编指令产生向量为
 128的编程异常
 
+整个系统调用过程如下:
+
+1. 用户应用程序填充系统调用的寄存器
+2. 进程从用户态切换到内核态, 并执行系统调用 entry_SYSCALL_64
+3. entry_SYSCALL_64 切换到内核栈, 保存现场(通用寄存器, 旧的栈. flags)
+4. entry_SYSCALL_64 调用 sys_call_table 中的函数, 如果正确调用对应的函数, 如果错误退出.
+5. 系统调用完成, 恢复现场(通用寄存器, 旧的栈. flags).
+
 ##参考
 
 https://0xax.gitbooks.io/linux-insides/content/SysCall/syscall-1.html
 https://en.wikipedia.org/wiki/System_call
-
+[Intel 指令参考](http://x86.renejeschke.de/)
+[GDT](https://en.wikipedia.org/wiki/Global_Descriptor_Table)
 
 ##附录
 
@@ -1240,3 +1556,5 @@ https://en.wikipedia.org/wiki/System_call
     543	x32	io_setup		compat_sys_io_setup
     544	x32	io_submit		compat_sys_io_submit
     545	x32	execveat		compat_sys_execveat/ptregs
+
+
