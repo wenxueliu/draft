@@ -438,6 +438,45 @@ The POST checks, identifies, and initializes system devices such as the CPU, RAM
 
 [母板](https://en.wikipedia.org/wiki/Motherboard#Design)
 
+内核引导程序：内核引导程序分两部分：主、次引导程序。主引导程序的主要工作就是收索，
+寻找活动的分区，将活动的分区引导记录中的次引导程序加载到内存中并且执行。而这个次
+引导程序就是负责加载内核的并且将控制权交给内核。上面提过内核引导程序有LILO、GRUB、
+U-Boot、RedBoot。其中前面两个为pc中的，而后面两个是嵌入式的。引导程序BootLoader
+开始负责操作系统初始化，然后起动操作系统。启动操作系统时一般会指定kernel、initrd
+和root所在的分区和目录。
+
+内核：内核以压缩的形式存在，不是一个可执行的内核！所以内核阶段首先要做的是自解压内核映像。
+这里说说编译内核后形成的内核压缩的映像vmlinuz。编译生成vmlinux后，一般会对其进行压缩为
+vmlinuz，使其成为zImage--小于512KB的小内核，或者成为bzImage--大于512KB的大内核。
+内核启动过程包括start_kernel之前和之后，之前全部是做初始化的汇编指令，之后开始C代码的
+操作系统初始化，最后执行第一个用户态进程init。
+
+一般分两阶段启动，先是利用initrd的内存文件系统，然后切换到硬盘文件系统继续启动。
+initrd文件的功能主要有两个：1、提供开机必需的但kernel文件(即vmlinuz)没有提供的驱动模块
+(modules)
+
+负责加载硬盘上的根文件系统并执行其中的/sbin/init程序进而将开机过程持续下去。
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 ##参考
 
 [](https://www.coreboot.org/Payloads#Linux)
@@ -500,3 +539,6 @@ arch/x86/include/asm/setup.h
 ###pushf
 
 EFLAGS
+
+
+
