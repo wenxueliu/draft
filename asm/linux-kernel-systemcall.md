@@ -750,6 +750,14 @@ asmlinkage const sys_call_ptr_t sys_call_table[__NR_syscall_max+1] = {
 };
 ```
 
+NOTE: 如何找到一个系统调用的具体实现代码?
+
+实际内核中并没有 sys 开头的系统调用实现函数,
+而是以 SYSCALL_DEFINEx 开头的函数实现. 其中
+x 是该系统调用的参数个数. 如 write 系统调用
+有三个参数, 实际函数为 SYSCALL_DEFINE3(write
+这样的函数.
+
 ###一个系统调用实现的分析
 
 
