@@ -1,3 +1,23 @@
+
+##尝试解决的问题
+
+* 什么时候捕获异常, 什么时候向上传递异常
+
+
+
+
+##异常概念
+
+* 调用栈
+* 异常抛出点
+
+当异常被抛出后, 异常后面的代码都不会被执行, 如果在一个方法中抛出异常, 方法后面的代码都不会执行, 包括返回值.
+
+异常处理也可能抛出异常
+
+异常处理完成, 继续从异常块后面的部分执行.
+
+
 ##异常分类
 
 　在Java中异常被当做对象来处理，根类是java.lang.Throwable类，在Java中定义了很多异常类（如OutOfMemoryError、NullPointerException、IndexOutOfBoundsException等），这些异常类分为两大类：Error和Exception。
